@@ -84,20 +84,55 @@ cd fastwhisper-flow
 | `HOTKEY` | `Key.cmd_r` | ปุ่มกดค้าง เช่น `Key.alt_r` = Right Option |
 | `INPUT_DEVICE` | `None` | ล็อกไมค์ตัวใดตัวหนึ่ง เช่น `"MacBook Pro Microphone"` |
 | `LOOPBACK_DEVICE` | `"BlackHole 2ch"` | อุปกรณ์สำหรับจับเสียงจากระบบ (Right ⌘ + Shift) |
+| `LOOPBACK_MODEL` | `whisper-large-v3-turbo` | โมเดล multilingual สำหรับเสียงระบบ (โมเดลไทยจะเดาเป็นไทยหมด) |
+| `LOOPBACK_LANGUAGE` | `None` | ตรวจภาษาอัตโนมัติในโหมดเสียงระบบ — ใส่ `"en"`/`"th"` เพื่อล็อก |
 
 เพิ่ม/ลดคำฟุ่มเฟือยที่ถูกตัด: แก้ลิสต์ใน `cleanup.py`
 
 ## 🔊 ถอดเสียงจากระบบ (Right ⌘ + Shift)
 
-กด **Right ⌘ + Shift** ค้าง = ถอดเสียงที่ Mac กำลังเล่นอยู่ (วิดีโอ, คอล ฯลฯ) แทนไมค์
-ต้องติดตั้ง [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole) และตั้ง Multi-Output Device ก่อน:
+กด **Right ⌘ + Shift** ค้าง = ถอดเสียงที่ Mac กำลังเล่นอยู่ (วิดีโอ YouTube, คอล, พอดแคสต์ ฯลฯ) แทนไมค์
+โหมดนี้ใช้โมเดล multilingual (`whisper-large-v3-turbo`) และ**ตรวจภาษาอัตโนมัติ** — เนื้อหาอังกฤษได้อังกฤษ ไทยได้ไทย
 
-1. `brew install blackhole-2ch` (หรือดาวน์โหลดจากเว็บ)
-2. เปิด **Audio MIDI Setup** → กด **+** → **Create Multi-Output Device** → ติ๊กทั้งลำโพงและ BlackHole 2ch
-3. ตั้ง Sound Output ของระบบเป็น Multi-Output Device นั้น (ยังได้ยินเสียงตามปกติ)
-4. กด Right ⌘ + Shift ค้างระหว่างเสียงเล่น → ปล่อย → ข้อความพิมพ์ให้เหมือนโหมดไมค์
+### ขั้นที่ 1 — ติดตั้ง BlackHole (ครั้งเดียว)
 
-ถ้าไม่ได้ติดตั้ง BlackHole จะเห็น ⚠️ ที่ menu bar ชั่วครู่ (โหมดไมค์ปกติยังใช้ได้เหมือนเดิม)
+```bash
+brew install blackhole-2ch
+```
+
+หรือดาวน์โหลดจาก [existential.audio/blackhole](https://existential.audio/blackhole/) — เป็น audio driver จึงต้องใส่รหัสผ่านเครื่อง
+
+### ขั้นที่ 2 — สร้าง Multi-Output Device (ครั้งเดียว)
+
+BlackHole เป็น "ลำโพงเสมือน" — ถ้าส่งเสียงเข้า BlackHole ตรง ๆ จะจับเสียงได้แต่**หูจะไม่ได้ยิน**
+จึงต้องสร้างอุปกรณ์ที่ส่งเสียงออก 2 ทางพร้อมกัน (ลำโพงจริง + BlackHole):
+
+1. เปิดแอป **Audio MIDI Setup** (กด ⌘Space พิมพ์ "Audio MIDI")
+2. กดปุ่ม **+** มุมล่างซ้าย → เลือก **Create Multi-Output Device**
+3. ในรายการด้านขวา ติ๊ก **Use** ให้ 2 ตัว:
+   - ✅ ลำโพงที่ใช้จริง (เช่น MacBook Pro Speakers หรือจอ/หูฟัง)
+   - ✅ **BlackHole 2ch**
+4. (แนะนำ) ติ๊ก **Drift Correction** ให้ BlackHole 2ch เพื่อกันเสียงเพี้ยน
+
+### ขั้นที่ 3 — ตั้งเป็น Sound Output
+
+**System Settings → Sound → Output** → เลือก **Multi-Output Device**
+(หรือคลิกไอคอนลำโพงบน menu bar) — ยังได้ยินเสียงตามปกติ แต่เสียงจะไหลเข้า BlackHole ด้วย
+
+จากนั้นทดลอง: เปิดวิดีโอ → กด **Right ⌘ + Shift** ค้าง → ปล่อย → ข้อความพิมพ์ให้เหมือนโหมดไมค์
+
+### ข้อควรรู้ / แก้ปัญหา
+
+| อาการ | สาเหตุ / วิธีแก้ |
+|---|---|
+| ปุ่มปรับเสียงบนคีย์บอร์ดใช้ไม่ได้ | ข้อจำกัดของ Multi-Output Device — ปรับเสียงในตัวแอป หรือใน Audio MIDI Setup แทน |
+| เห็น ⚠️ ที่ menu bar หลังปล่อยปุ่ม | ไม่มีเสียงเข้า BlackHole — เช็คว่า Sound Output เป็น Multi-Output Device อยู่ (ขั้นที่ 3) |
+| ได้ข้อความมั่ว ๆ ซ้ำ ๆ เช่น "nenenene" | อัดได้แต่ความเงียบ — สาเหตุเดียวกับข้อบน |
+| ไม่ได้ติดตั้ง BlackHole | โหมดไมค์ (Right ⌘) ยังใช้ได้ปกติ — โหมดระบบจะขึ้น ⚠️ เฉย ๆ |
+| อยากกลับไปใช้ลำโพงตรง ๆ | เปลี่ยน Sound Output กลับเป็นลำโพงเดิม (โหมดระบบจะใช้ไม่ได้จนกว่าจะสลับกลับ) |
+
+> เคล็ดลับ: ติดตั้ง `brew install switchaudio-osx` แล้วสลับ output จาก terminal ได้เลย:
+> `SwitchAudioSource -t output -s "Multi-Output Device"` ↔ `SwitchAudioSource -t output -s "MacBook Pro Speakers"`
 
 ## 🔧 แก้ปัญหา
 
