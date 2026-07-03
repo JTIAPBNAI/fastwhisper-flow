@@ -83,8 +83,21 @@ cd fastwhisper-flow
 | `LANGUAGE` | `"th"` | `None` = ตรวจภาษาอัตโนมัติ |
 | `HOTKEY` | `Key.cmd_r` | ปุ่มกดค้าง เช่น `Key.alt_r` = Right Option |
 | `INPUT_DEVICE` | `None` | ล็อกไมค์ตัวใดตัวหนึ่ง เช่น `"MacBook Pro Microphone"` |
+| `LOOPBACK_DEVICE` | `"BlackHole 2ch"` | อุปกรณ์สำหรับจับเสียงจากระบบ (Right ⌘ + Shift) |
 
 เพิ่ม/ลดคำฟุ่มเฟือยที่ถูกตัด: แก้ลิสต์ใน `cleanup.py`
+
+## 🔊 ถอดเสียงจากระบบ (Right ⌘ + Shift)
+
+กด **Right ⌘ + Shift** ค้าง = ถอดเสียงที่ Mac กำลังเล่นอยู่ (วิดีโอ, คอล ฯลฯ) แทนไมค์
+ต้องติดตั้ง [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole) และตั้ง Multi-Output Device ก่อน:
+
+1. `brew install blackhole-2ch` (หรือดาวน์โหลดจากเว็บ)
+2. เปิด **Audio MIDI Setup** → กด **+** → **Create Multi-Output Device** → ติ๊กทั้งลำโพงและ BlackHole 2ch
+3. ตั้ง Sound Output ของระบบเป็น Multi-Output Device นั้น (ยังได้ยินเสียงตามปกติ)
+4. กด Right ⌘ + Shift ค้างระหว่างเสียงเล่น → ปล่อย → ข้อความพิมพ์ให้เหมือนโหมดไมค์
+
+ถ้าไม่ได้ติดตั้ง BlackHole จะเห็น ⚠️ ที่ menu bar ชั่วครู่ (โหมดไมค์ปกติยังใช้ได้เหมือนเดิม)
 
 ## 🔧 แก้ปัญหา
 

@@ -25,6 +25,9 @@ LANGUAGE = "th"          # force Thai (best accuracy); None = auto-detect
 HOTKEY = Key.cmd_r       # hold Right Command to talk
 INPUT_DEVICE = None      # None = system default; or a name like
                          # "MacBook Pro Microphone" / "Maono DM40 Mic USB"
+LOOPBACK_DEVICE = "BlackHole 2ch"  # hold Right ⌘ + Shift to capture system
+                                   # audio; needs the BlackHole driver and a
+                                   # Multi-Output Device routing sound to it
 SAMPLE_RATE = 16000
 MIN_SECONDS = 0.5        # ignore accidental taps
 # -----------------------------------------------------------------------
@@ -39,11 +42,16 @@ class Recorder:
         self._q = queue.Queue()
         self._stream = None
 
-    def start(self):
+    def start(self, device=INPUT_DEVICE):
         self._q = queue.Queue()
+        info = sd.query_devices(device if device is not None else sd.default.device[0])
+        # loopback drivers (BlackHole) run at their own rate; capture natively
+        # and resample to SAMPLE_RATE in stop()
+        self._rate = int(info["default_samplerate"])
+        channels = min(2, info["max_input_channels"])
         self._stream = sd.InputStream(
-            device=INPUT_DEVICE,
-            samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+            device=device,
+            samplerate=self._rate, channels=channels, dtype="float32",
             callback=lambda data, *_: self._q.put(data.copy()),
         )
         self._stream.start()
@@ -57,7 +65,16 @@ class Recorder:
             chunks.append(self._q.get())
         if not chunks:
             return np.zeros(0, dtype=np.float32)
-        return np.concatenate(chunks).flatten()
+        audio = np.concatenate(chunks)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)  # downmix stereo to mono
+        if self._rate != SAMPLE_RATE:
+            n = int(len(audio) * SAMPLE_RATE / self._rate)
+            audio = np.interp(
+                np.linspace(0, len(audio) - 1, n),
+                np.arange(len(audio)), audio,
+            ).astype(np.float32)
+        return audio.flatten()
 
 
 def paste_text(text: str):
@@ -79,10 +96,14 @@ def paste_text(text: str):
 class FlowApp(rumps.App):
     def __init__(self):
         super().__init__(ICON_IDLE, quit_button="Quit")
-        self.menu = ["FastWhisper Flow — hold Right ⌘ to talk"]
+        self.menu = [
+            "FastWhisper Flow — hold Right ⌘ to talk",
+            "Hold Right ⌘ + Shift for system audio",
+        ]
         self.recorder = Recorder()
         self.recording = False
         self.busy = False
+        self.shift_down = False
         self.transcribe = None  # loaded lazily
 
         threading.Thread(target=self._load_model, daemon=True).start()
@@ -103,16 +124,33 @@ class FlowApp(rumps.App):
         self.transcribe = mlx_whisper.transcribe
         self.title = ICON_IDLE
 
+    def _flash_error(self, msg: str):
+        print(msg, flush=True)
+        self.title = "⚠️"
+        threading.Timer(2.0, lambda: setattr(self, "title", ICON_IDLE)).start()
+
     # ------------------------------------------------------------ hotkey
     def _on_press(self, key):
+        if key in (Key.shift, Key.shift_l, Key.shift_r):
+            self.shift_down = True
         if key == HOTKEY and not self.recording and not self.busy:
             if self.transcribe is None:
                 return  # model still loading
+            device = LOOPBACK_DEVICE if self.shift_down else INPUT_DEVICE
+            try:
+                self.recorder.start(device)
+            except Exception as e:
+                msg = f"cannot open input '{device}': {e}"
+                if self.shift_down:
+                    msg += " (is BlackHole installed?)"
+                self._flash_error(msg)
+                return
             self.recording = True
             self.title = ICON_REC
-            self.recorder.start()
 
     def _on_release(self, key):
+        if key in (Key.shift, Key.shift_l, Key.shift_r):
+            self.shift_down = False
         if key == HOTKEY and self.recording:
             self.recording = False
             audio = self.recorder.stop()
