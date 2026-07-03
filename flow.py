@@ -28,6 +28,9 @@ INPUT_DEVICE = None      # None = system default; or a name like
 LOOPBACK_DEVICE = "BlackHole 2ch"  # hold Right ⌘ + Shift to capture system
                                    # audio; needs the BlackHole driver and a
                                    # Multi-Output Device routing sound to it
+LOOPBACK_LANGUAGE = None  # auto-detect for system audio (may be English etc.)
+SILENCE_PEAK = 0.005      # skip transcription below this level — forcing a
+                          # language on silence makes Whisper hallucinate
 SAMPLE_RATE = 16000
 MIN_SECONDS = 0.5        # ignore accidental taps
 # -----------------------------------------------------------------------
@@ -104,6 +107,7 @@ class FlowApp(rumps.App):
         self.recording = False
         self.busy = False
         self.shift_down = False
+        self.loopback = False
         self.transcribe = None  # loaded lazily
 
         threading.Thread(target=self._load_model, daemon=True).start()
@@ -136,7 +140,8 @@ class FlowApp(rumps.App):
         if key == HOTKEY and not self.recording and not self.busy:
             if self.transcribe is None:
                 return  # model still loading
-            device = LOOPBACK_DEVICE if self.shift_down else INPUT_DEVICE
+            self.loopback = self.shift_down
+            device = LOOPBACK_DEVICE if self.loopback else INPUT_DEVICE
             try:
                 self.recorder.start(device)
             except Exception as e:
@@ -166,8 +171,12 @@ class FlowApp(rumps.App):
     # --------------------------------------------------------- pipeline
     def _process(self, audio: np.ndarray):
         try:
+            if float(np.abs(audio).max()) < SILENCE_PEAK:
+                self._flash_error("no audio captured — check sound routing")
+                return
+            lang = LOOPBACK_LANGUAGE if self.loopback else LANGUAGE
             result = self.transcribe(
-                audio, path_or_hf_repo=MODEL, language=LANGUAGE
+                audio, path_or_hf_repo=MODEL, language=lang
             )
             text = clean(result["text"])
             if text:
@@ -176,7 +185,8 @@ class FlowApp(rumps.App):
             print(f"transcription error: {e}")
         finally:
             self.busy = False
-            self.title = ICON_IDLE
+            if self.title != "⚠️":  # keep the error flash visible
+                self.title = ICON_IDLE
 
 
 if __name__ == "__main__":
