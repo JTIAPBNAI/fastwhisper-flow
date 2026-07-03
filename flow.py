@@ -29,6 +29,8 @@ LOOPBACK_DEVICE = "BlackHole 2ch"  # hold Right ⌘ + Shift to capture system
                                    # audio; needs the BlackHole driver and a
                                    # Multi-Output Device routing sound to it
 LOOPBACK_LANGUAGE = None  # auto-detect for system audio (may be English etc.)
+LOOPBACK_MODEL = "mlx-community/whisper-large-v3-turbo"  # general multilingual
+# model for system audio — the Thai fine-tune above skews detection to Thai
 SILENCE_PEAK = 0.005      # skip transcription below this level — forcing a
                           # language on silence makes Whisper hallucinate
 SAMPLE_RATE = 16000
@@ -177,9 +179,12 @@ class FlowApp(rumps.App):
             if float(np.abs(audio).max()) < SILENCE_PEAK:
                 self._flash_error("no audio captured — check sound routing")
                 return
-            lang = LOOPBACK_LANGUAGE if self.loopback else LANGUAGE
+            if self.loopback:
+                model, lang = LOOPBACK_MODEL, LOOPBACK_LANGUAGE
+            else:
+                model, lang = MODEL, LANGUAGE
             result = self.transcribe(
-                audio, path_or_hf_repo=MODEL, language=lang
+                audio, path_or_hf_repo=model, language=lang
             )
             text = clean(result["text"])
             if text:
