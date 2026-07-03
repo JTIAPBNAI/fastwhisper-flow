@@ -48,8 +48,8 @@
 ## 🛠 วิธีที่ 2: ติดตั้งจากซอร์สโค้ด (สำหรับนักพัฒนา)
 
 ```bash
-git clone https://github.com/JTIAPBNAI/fastwhisper.git
-cd fastwhisper
+git clone https://github.com/JTIAPBNAI/fastwhisper-flow.git
+cd fastwhisper-flow
 ./install.sh
 ```
 
