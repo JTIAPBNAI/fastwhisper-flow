@@ -2,6 +2,8 @@
 
 **พิมพ์ด้วยเสียงภาษาไทย/อังกฤษ บน Mac — ฟรี 100% ทำงานในเครื่อง ไม่ส่งเสียงขึ้นเน็ต**
 
+*Powered by **JTIAPBN.Ai** × **Whispering Weekends***
+
 > กด **Right ⌘** ค้าง → พูด → ปล่อย → ข้อความพิมพ์ให้เองในทุกแอป
 > ใช้ได้กับ Notes, LINE, เบราว์เซอร์, VS Code — ทุกที่ที่พิมพ์ได้
 
@@ -98,3 +100,7 @@ cd fastwhisper
 MIT — ใช้ แก้ แจกต่อได้อิสระ
 
 โมเดล: [Thonburian Whisper](https://huggingface.co/biodatlab/distill-whisper-th-large-v3) (biodatlab) แปลงเป็น MLX โดย [tawankri](https://huggingface.co/tawankri/distill-thonburian-whisper-large-v3-mlx)
+
+---
+
+<p align="center"><i>Powered by <b>JTIAPBN.Ai</b> — Whispering Weekends 🎙✨</i></p>
