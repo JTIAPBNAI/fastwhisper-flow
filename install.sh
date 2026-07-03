@@ -43,6 +43,23 @@ EOF
 fi
 [[ "$STAGE" == "model" ]] && exit 0
 
+# 3.5 optional: BlackHole driver for system-audio capture (Right ⌘ + Shift)
+if ! system_profiler SPAudioDataType 2>/dev/null | grep -q "BlackHole 2ch"; then
+  if command -v brew >/dev/null; then
+    echo ""
+    read "ans?ติดตั้ง BlackHole สำหรับถอดเสียงจากระบบ (Right ⌘ + Shift) ด้วยไหม? [y/N] "
+    if [[ "$ans" == [yY]* ]]; then
+      brew install blackhole-2ch || echo "⚠️  ติดตั้ง BlackHole ไม่สำเร็จ — ลงทีหลังได้: brew install blackhole-2ch"
+      echo "   หลังติดตั้ง: เปิด Audio MIDI Setup → + → Create Multi-Output Device"
+      echo "   → ติ๊กลำโพง + BlackHole 2ch → ตั้งเป็น Sound Output (ดู README หัวข้อ 🔊)"
+    else
+      echo "   ข้าม — โหมดไมค์ใช้ได้ปกติ ลง BlackHole ทีหลังได้เสมอ"
+    fi
+  else
+    echo "ℹ️  โหมดเสียงระบบ (Right ⌘ + Shift) ต้องลง BlackHole เอง — ดู README หัวข้อ 🔊"
+  fi
+fi
+
 # 4. generate launch-agent plist with this machine's paths
 cat > com.fastwhisper.flow.plist <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
