@@ -82,7 +82,10 @@ class Recorder:
 
 def paste_text(text: str):
     """Put text on the clipboard and simulate Cmd+V in the frontmost app."""
-    env = {**os.environ, "LC_CTYPE": "UTF-8"}
+    # force a full UTF-8 locale — LC_ALL=C in the parent env would otherwise
+    # make pbcopy mangle Thai text into "?"
+    env = {**os.environ, "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8",
+           "LC_CTYPE": "en_US.UTF-8"}
     subprocess.run("pbcopy", input=text.encode("utf-8"), env=env)
     time.sleep(0.1)
     r = subprocess.run(
