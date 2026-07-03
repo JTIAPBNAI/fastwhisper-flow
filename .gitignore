@@ -4,3 +4,6 @@ dist/
 *.app/
 FastWhisper Toggle.command
 com.fastwhisper.flow.plist
+.DS_Store
+Installer File/
+*.zip
