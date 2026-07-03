@@ -89,6 +89,14 @@ cd fastwhisper-flow
 
 เพิ่ม/ลดคำฟุ่มเฟือยที่ถูกตัด: แก้ลิสต์ใน `cleanup.py`
 
+## 🛠 สำหรับผู้พัฒนา — ออก release ใหม่
+
+1. แก้โค้ด → commit → push `main`
+2. รัน `./build-installer.sh` — อัปเดต payload ใน `Installer File/FastWhisperFlow-Installer.zip` ให้เป็นโค้ดล่าสุด + re-sign อัตโนมัติ
+3. `gh release create vX.Y.Z "Installer File/FastWhisperFlow-Installer.zip" --title "..." --notes "..."`
+
+> ⚠️ **ห้ามลบ** `Installer File/FastWhisperFlow-Installer.zip` — ตัว `Install FastWhisper Flow.app` (ไอคอน + สคริปต์ติดตั้ง) มีอยู่แค่ใน zip นี้และไม่ได้อยู่ใน git (ถูก ignore) สคริปต์ build ต้องใช้เป็นแม่แบบ
+
 ## 🔊 ถอดเสียงจากระบบ (Right ⌘ + Shift)
 
 กด **Right ⌘ + Shift** ค้าง = ถอดเสียงที่ Mac กำลังเล่นอยู่ (วิดีโอ YouTube, คอล, พอดแคสต์ ฯลฯ) แทนไมค์
