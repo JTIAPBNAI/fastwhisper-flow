@@ -118,6 +118,7 @@ class FlowApp(rumps.App):
         self.recorder = Recorder()
         self.recording = False
         self.busy = False
+        self._busy_since = 0.0
         self.shift_down = False
         self.option_down = False
         self.loopback = False
@@ -148,11 +149,38 @@ class FlowApp(rumps.App):
         threading.Timer(2.0, lambda: setattr(self, "title", ICON_IDLE)).start()
 
     # ------------------------------------------------------------ hotkey
+    # NOTE: pynput kills the listener thread permanently if a callback
+    # raises, so both handlers must never let an exception escape.
     def _on_press(self, key):
+        try:
+            self._handle_press(key)
+        except Exception as e:
+            print(f"hotkey press error: {e}", flush=True)
+            self._reset_state()
+
+    def _on_release(self, key):
+        try:
+            self._handle_release(key)
+        except Exception as e:
+            print(f"hotkey release error: {e}", flush=True)
+            self._reset_state()
+
+    def _reset_state(self):
+        self.recording = False
+        self.busy = False
+        self.recorder._stream = None
+        self.title = ICON_IDLE
+
+    def _handle_press(self, key):
         if key in (Key.shift, Key.shift_l, Key.shift_r):
             self.shift_down = True
         if key in (Key.alt, Key.alt_l, Key.alt_r):
             self.option_down = True
+        # failsafe: if transcription hung and left busy stuck, recover
+        if self.busy and time.time() - self._busy_since > 60:
+            print("busy watchdog: resetting stuck state", flush=True)
+            self.busy = False
+            self.title = ICON_IDLE
         if key == HOTKEY and not self.recording and not self.busy:
             if self.transcribe is None:
                 return  # model still loading
@@ -175,18 +203,25 @@ class FlowApp(rumps.App):
             else:
                 self.title = ICON_REC
 
-    def _on_release(self, key):
+    def _handle_release(self, key):
         if key in (Key.shift, Key.shift_l, Key.shift_r):
             self.shift_down = False
         if key in (Key.alt, Key.alt_l, Key.alt_r):
             self.option_down = False
         if key == HOTKEY and self.recording:
             self.recording = False
-            audio = self.recorder.stop()
+            try:
+                audio = self.recorder.stop()
+            except Exception as e:
+                # stream died mid-recording (device unplugged, sleep, …)
+                self.recorder._stream = None
+                self._flash_error(f"recording failed: {e}")
+                return
             if len(audio) < SAMPLE_RATE * MIN_SECONDS:
                 self.title = ICON_IDLE
                 return
             self.busy = True
+            self._busy_since = time.time()
             self.title = ICON_BUSY
             threading.Thread(
                 target=self._process, args=(audio,), daemon=True
