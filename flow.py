@@ -31,6 +31,8 @@ LOOPBACK_DEVICE = "BlackHole 2ch"  # hold Right ⌘ + Shift to capture system
 LOOPBACK_LANGUAGE = None  # auto-detect for system audio (may be English etc.)
 LOOPBACK_MODEL = "mlx-community/whisper-large-v3-turbo"  # general multilingual
 # model for system audio — the Thai fine-tune above skews detection to Thai
+MULTILINGUAL_LANGUAGE = None  # hold Right ⌘ + Option: mic dictation with the
+# multilingual model above, auto-detect language (for English / heavy mixing)
 SILENCE_PEAK = 0.005      # skip transcription below this level — forcing a
                           # language on silence makes Whisper hallucinate
 SAMPLE_RATE = 16000
@@ -39,6 +41,8 @@ MIN_SECONDS = 0.5        # ignore accidental taps
 
 ICON_IDLE = "🎙"
 ICON_REC = "🔴"
+ICON_REC_EN = "🔵"        # multilingual mic mode (Right ⌘ + Option)
+ICON_REC_SYS = "🟢"       # system-audio loopback mode (Right ⌘ + Shift)
 ICON_BUSY = "⏳"
 
 
@@ -105,14 +109,19 @@ class FlowApp(rumps.App):
     def __init__(self):
         super().__init__(ICON_IDLE, quit_button="Quit")
         self.menu = [
-            "FastWhisper Flow — hold Right ⌘ to talk",
-            "Hold Right ⌘ + Shift for system audio",
+            "🎙 Right ⌘ (ค้าง) — พูดไทย → 🔴",
+            "🌐 Right ⌘ + Option — English / auto-detect → 🔵",
+            "🔊 Right ⌘ + Shift — เสียงจากระบบ → 🟢",
+            None,
+            "ปล่อยปุ่ม = ถอดเสียง (⏳) แล้วพิมพ์ให้เอง",
         ]
         self.recorder = Recorder()
         self.recording = False
         self.busy = False
         self.shift_down = False
+        self.option_down = False
         self.loopback = False
+        self.multilingual = False
         self.transcribe = None  # loaded lazily
 
         threading.Thread(target=self._load_model, daemon=True).start()
@@ -142,10 +151,13 @@ class FlowApp(rumps.App):
     def _on_press(self, key):
         if key in (Key.shift, Key.shift_l, Key.shift_r):
             self.shift_down = True
+        if key in (Key.alt, Key.alt_l, Key.alt_r):
+            self.option_down = True
         if key == HOTKEY and not self.recording and not self.busy:
             if self.transcribe is None:
                 return  # model still loading
             self.loopback = self.shift_down
+            self.multilingual = self.option_down
             device = LOOPBACK_DEVICE if self.loopback else INPUT_DEVICE
             try:
                 self.recorder.start(device)
@@ -156,11 +168,18 @@ class FlowApp(rumps.App):
                 self._flash_error(msg)
                 return
             self.recording = True
-            self.title = ICON_REC
+            if self.loopback:
+                self.title = ICON_REC_SYS
+            elif self.multilingual:
+                self.title = ICON_REC_EN
+            else:
+                self.title = ICON_REC
 
     def _on_release(self, key):
         if key in (Key.shift, Key.shift_l, Key.shift_r):
             self.shift_down = False
+        if key in (Key.alt, Key.alt_l, Key.alt_r):
+            self.option_down = False
         if key == HOTKEY and self.recording:
             self.recording = False
             audio = self.recorder.stop()
@@ -181,6 +200,8 @@ class FlowApp(rumps.App):
                 return
             if self.loopback:
                 model, lang = LOOPBACK_MODEL, LOOPBACK_LANGUAGE
+            elif self.multilingual:
+                model, lang = LOOPBACK_MODEL, MULTILINGUAL_LANGUAGE
             else:
                 model, lang = MODEL, LANGUAGE
             result = self.transcribe(
