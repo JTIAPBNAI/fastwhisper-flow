@@ -8,9 +8,9 @@ import os
 import queue
 import json
 import re
+import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -509,6 +509,24 @@ class FlowApp(rumps.App):
         return matches[0]
 
     def _restart_app(self):
+        pid = os.getpid()
+        app_dir = shlex.quote(str(APP_DIR))
+        log_path = shlex.quote(LOG_PATH)
+        script = (
+            f"PID={pid}; APP_DIR={app_dir}; LOG={log_path}; "
+            "("
+            "while kill -0 \"$PID\" 2>/dev/null; do sleep 0.2; done; "
+            "cd \"$APP_DIR\" && ./flow.sh start"
+            ") >> \"$LOG\" 2>&1 &"
+        )
+        print("update: scheduling external restart", flush=True)
+        subprocess.Popen(
+            ["/bin/zsh", "-lc", script],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
         self._reset_state()
         with self._listener_lock:
             if self.listener is not None:
@@ -516,7 +534,7 @@ class FlowApp(rumps.App):
                     self.listener.stop()
                 except Exception:
                     pass
-        os.execv(sys.executable, [sys.executable, str(APP_DIR / "flow.py")])
+        os._exit(0)
 
     def _menu_test_mic(self, _sender):
         if self.recording or self.busy:

@@ -80,6 +80,7 @@ cd fastwhisper-flow
 - ดูสถานะใน menu bar ได้ทันที: Hotkey, Microphone, Accessibility, Input, Model
 - แก้ปัญหาเบื้องต้นจาก menu bar ได้: `Restart Listener`, `Test Mic`, `Open Log`
 - อัปเดตจาก menu bar ได้: `Check Update` จะอัปเดตบรรทัด `Update:` ระหว่างเช็ค/ดาวน์โหลด/ติดตั้ง แล้วอัปเดตเฉพาะไฟล์แอปโดยไม่ลง `.venv` หรือโมเดลใหม่
+  หลังติดตั้งไฟล์ใหม่แล้ว แอปจะปิดตัวเองและให้ helper เปิดกลับผ่าน `flow.sh start` อัตโนมัติ
 - รีเซ็ตสิทธิ์เพื่อทดสอบติดตั้งใหม่: `./reset-permissions.sh`
 
 ## ⚙️ ปรับแต่ง (แก้ที่หัวไฟล์ `flow.py` แล้ว restart)
