@@ -3,7 +3,6 @@
 DIR="$(cd "$(dirname "$0")" && pwd)"
 PY="$DIR/.venv/bin/python"
 LOG=/tmp/fastwhisper-flow.log
-AGENT="$HOME/Library/LaunchAgents/com.fastwhisper.flow.plist"
 DOMAIN="gui/$(id -u)"
 
 running() { pgrep -f "flow.py" >/dev/null; }
@@ -11,18 +10,15 @@ running() { pgrep -f "flow.py" >/dev/null; }
 case "$1" in
   start)
     if running; then echo "Already running (menu bar 🎙)."; exit 0; fi
-    # prefer launchd: starts at login and relaunches automatically on crash
-    if [[ -f "$AGENT" ]]; then
-      launchctl bootstrap "$DOMAIN" "$AGENT" 2>/dev/null \
-        || launchctl kickstart "$DOMAIN/com.fastwhisper.flow" 2>/dev/null \
-        || { cd "$DIR" && nohup "$PY" flow.py >"$LOG" 2>&1 & }
-    else
-      cd "$DIR" && nohup "$PY" flow.py >"$LOG" 2>&1 &
-    fi
+    # NOTE: must NOT run under launchd — macOS then attributes the mic
+    # permission to bare Python and refuses to show the permission dialog
+    # (recordings become all zeros). nohup keeps the Toggle app (a real
+    # app bundle with a mic usage description) as the responsible process.
+    cd "$DIR" && nohup "$PY" flow.py >"$LOG" 2>&1 &
     echo "Started. Wait for 🎙 in the menu bar (⏳ = model loading)."
     ;;
   stop)
-    # unload the agent first, or launchd's KeepAlive would respawn the app
+    # stop any legacy launchd job from older installs before killing Python
     launchctl bootout "$DOMAIN/com.fastwhisper.flow" 2>/dev/null
     pkill -f "flow.py" && echo "Stopped." || echo "Not running."
     ;;

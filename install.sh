@@ -5,8 +5,13 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
 STAGE="${1:-all}"   # all | deps | model | apps  (stages let the GUI installer show progress)
+if [[ -f VERSION ]]; then
+  APP_VERSION="$(<VERSION)"
+else
+  APP_VERSION="dev"
+fi
 
-echo "== FastWhisper Flow installer ($STAGE) =="
+echo "== FastWhisper Flow v$APP_VERSION installer ($STAGE) =="
 
 # 1. checks
 [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: ต้องเป็น Mac ชิป Apple Silicon (M1 ขึ้นไป)"; exit 1; }
@@ -73,51 +78,40 @@ if [[ -n "$PYAPP" ]] && ! plutil -p "$PYAPP/Contents/Info.plist" 2>/dev/null | g
   echo "✓ Python.app ขอสิทธิ์ไมโครโฟนได้แล้ว"
 fi
 
-# 4. generate launch-agent plist with this machine's paths
-cat > com.fastwhisper.flow.plist <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>com.fastwhisper.flow</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$DIR/.venv/bin/python</string>
-        <string>$DIR/flow.py</string>
-    </array>
-    <key>RunAtLoad</key><true/>
-    <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>/tmp/fastwhisper-flow.log</string>
-    <key>StandardErrorPath</key><string>/tmp/fastwhisper-flow.log</string>
-</dict>
-</plist>
-EOF
-# install it so the app starts at login and relaunches itself if it crashes;
-# flow.sh (and therefore the Toggle app) starts/stops it via launchctl
-mkdir -p ~/Library/LaunchAgents
-cp com.fastwhisper.flow.plist ~/Library/LaunchAgents/
-echo "✓ ติดตั้ง launch agent (เริ่มอัตโนมัติตอน login, เด้งกลับเองถ้าแครช)"
+# 4. remove the legacy launch agent if an older installer created one.
+# The app is now started only by FastWhisper Toggle.app so permissions are
+# requested during an explicit app launch, not silently at login.
+launchctl bootout "gui/$(id -u)/com.fastwhisper.flow" 2>/dev/null || true
+rm -f ~/Library/LaunchAgents/com.fastwhisper.flow.plist com.fastwhisper.flow.plist
+echo "✓ ตั้งค่าให้เริ่มจาก FastWhisper Toggle.app เท่านั้น"
 
 # 5. build the double-click toggle app for this machine
 rm -rf "FastWhisper Toggle.app"
 osacompile -o "FastWhisper Toggle.app" -e "
 set dir to \"$DIR\"
+set appVersion to \"$APP_VERSION\"
 try
     do shell script \"pgrep -f flow.py\"
     do shell script \"cd \" & quoted form of dir & \" && ./flow.sh stop\"
-    display notification \"Dictation stopped\" with title \"FastWhisper Flow\"
+    display notification \"Dictation stopped\" with title \"FastWhisper Flow v\" & appVersion
 on error
     do shell script \"cd \" & quoted form of dir & \" && ./flow.sh start\"
-    display notification \"Starting… wait for 🎙 in the menu bar\" with title \"FastWhisper Flow\"
+    display notification \"Starting… wait for 🎙 in the menu bar\" with title \"FastWhisper Flow v\" & appVersion
 end try
 " >/dev/null
+plutil -replace CFBundleIdentifier -string "com.jtiapbn.fastwhisperflow.toggle" "FastWhisper Toggle.app/Contents/Info.plist"
+plutil -replace CFBundleShortVersionString -string "$APP_VERSION" "FastWhisper Toggle.app/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$APP_VERSION" "FastWhisper Toggle.app/Contents/Info.plist"
+plutil -replace NSMicrophoneUsageDescription -string "FastWhisper Flow needs microphone access for local dictation." "FastWhisper Toggle.app/Contents/Info.plist"
+plutil -replace NSAppleEventsUsageDescription -string "FastWhisper Flow uses System Events to paste dictated text into the active app." "FastWhisper Toggle.app/Contents/Info.plist"
+codesign --force --deep -s - "FastWhisper Toggle.app" >/dev/null 2>&1 || true
 echo "✓ สร้าง FastWhisper Toggle.app"
 
-chmod +x flow.sh
+chmod +x flow.sh reset-permissions.sh
 echo ""
 echo "== ติดตั้งเสร็จ! ขั้นตอนที่เหลือ (ทำเองครั้งเดียว): =="
 PYAPP=$(.venv/bin/python -c "import sys,os;p=os.path.join(sys.base_prefix,'Resources','Python.app');print(p if os.path.exists(p) else sys.base_prefix)")
 echo "1. System Settings → Privacy & Security → Accessibility → กด + → ⌘⇧G → วางพาธนี้:"
 echo "   $PYAPP"
-echo "2. ดับเบิลคลิก 'FastWhisper Toggle.app' เพื่อเริ่ม รอ 🎙 ใน menu bar"
+echo "2. ดับเบิลคลิก 'FastWhisper Toggle.app' เพื่อเริ่ม FastWhisper Flow v$APP_VERSION รอ 🎙 ใน menu bar"
 echo "3. กด Right ⌘ ค้างแล้วพูด — ครั้งแรก macOS จะถามสิทธิ์ Microphone/System Events → กด Allow"

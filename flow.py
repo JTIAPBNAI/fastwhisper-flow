@@ -9,6 +9,7 @@ import queue
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import rumps
@@ -20,6 +21,11 @@ from cleanup import clean
 
 # ---------------------------------------------------------------- config
 MODEL = "tawankri/distill-thonburian-whisper-large-v3-mlx"  # Thai fine-tune
+APP_VERSION = (
+    Path(__file__).with_name("VERSION").read_text(encoding="utf-8").strip()
+    if Path(__file__).with_name("VERSION").exists()
+    else "dev"
+)
 # fallback general model: "mlx-community/whisper-large-v3-turbo"
 LANGUAGE = "th"          # force Thai (best accuracy); None = auto-detect
 HOTKEY = Key.cmd_r       # hold Right Command to talk
@@ -130,6 +136,8 @@ class FlowApp(rumps.App):
     def __init__(self):
         super().__init__(ICON_IDLE, quit_button="Quit")
         self.menu = [
+            f"FastWhisper Flow v{APP_VERSION}",
+            None,
             "🎙 Right ⌘ (ค้าง) — พูดไทย → 🔴",
             "🌐 Right ⌘ + Option — English / auto-detect → 🔵",
             "🔊 Right ⌘ + Shift — เสียงจากระบบ → 🟢",
@@ -140,6 +148,7 @@ class FlowApp(rumps.App):
         self.recording = False
         self.busy = False
         self._busy_since = 0.0
+        self._error_until = 0.0
         self.shift_down = False
         self.option_down = False
         self.loopback = False
@@ -226,19 +235,27 @@ class FlowApp(rumps.App):
 
     def _load_model(self):
         self.title = ICON_BUSY
-        import mlx_whisper  # heavy import; also triggers model download
+        try:
+            import mlx_whisper  # heavy import; also triggers model download
 
-        # warm up so the first real dictation is fast
-        mlx_whisper.transcribe(
-            np.zeros(SAMPLE_RATE, dtype=np.float32), path_or_hf_repo=MODEL
-        )
-        self.transcribe = mlx_whisper.transcribe
-        self.title = ICON_IDLE
+            # warm up so the first real dictation is fast
+            mlx_whisper.transcribe(
+                np.zeros(SAMPLE_RATE, dtype=np.float32), path_or_hf_repo=MODEL
+            )
+            self.transcribe = mlx_whisper.transcribe
+            self.title = ICON_IDLE
+        except Exception as e:
+            self._flash_error(f"model load failed: {e}")
 
     def _flash_error(self, msg: str):
         print(msg, flush=True)
         self.title = "⚠️"
-        threading.Timer(2.0, lambda: setattr(self, "title", ICON_IDLE)).start()
+        self._error_until = time.time() + 3.0
+        threading.Timer(3.0, self._clear_error_if_current).start()
+
+    def _clear_error_if_current(self):
+        if self.title == "⚠️" and not self.recording and not self.busy:
+            self.title = ICON_IDLE
 
     # ------------------------------------------------------------ hotkey
     # NOTE: pynput kills the listener thread permanently if a callback
@@ -354,7 +371,9 @@ class FlowApp(rumps.App):
             print(f"transcription error: {e}")
         finally:
             self.busy = False
-            if self.title != "⚠️":  # keep the error flash visible
+            if self.title == "⚠️" and time.time() < self._error_until:
+                pass  # keep the current error flash visible
+            else:
                 self.title = ICON_IDLE
 
 

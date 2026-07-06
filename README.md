@@ -54,10 +54,11 @@ cd fastwhisper-flow
 ```
 
 `install.sh` จะสร้าง virtualenv, ติดตั้ง dependencies, ดาวน์โหลดโมเดล, และสร้าง
-`FastWhisper Toggle.app` + launch agent ให้เอง จากนั้นทำตามขั้นตอนให้สิทธิ์ที่พิมพ์บอกตอนจบ
+`FastWhisper Toggle.app` ให้เอง จากนั้นทำตามขั้นตอนให้สิทธิ์ที่พิมพ์บอกตอนจบ
 (เหมือนข้อ 4–6 ด้านบน)
 
 รันแบบ manual: `./flow.sh start|stop|restart|status|mic|log`
+เริ่มแอปหลังติดตั้งด้วย `FastWhisper Toggle.app` เท่านั้น แอปจะไม่เริ่มเองทันทีหลังติดตั้งหรือหลัง login
 
 ---
 
@@ -76,7 +77,7 @@ cd fastwhisper-flow
 - จะพูด**อังกฤษล้วนหรือปนอังกฤษเยอะ ๆ**: กด **Right ⌘ + Option** ค้าง — ใช้โมเดล multilingual ตรวจภาษาอัตโนมัติ (โหมดปกติยังล็อกไทยเพื่อความแม่นยำสูงสุด)
 - ข้อความทุกครั้งถูกเก็บใน**คลิปบอร์ด**ด้วย — ถ้าพิมพ์ไม่ลง กด ⌘V ได้เลย
 - เปิด/ปิดแอป: ดับเบิลคลิก `FastWhisper Toggle.app` (มี notification ยืนยัน)
-- เปิดอัตโนมัติตอน login: `cp com.fastwhisper.flow.plist ~/Library/LaunchAgents/`
+- รีเซ็ตสิทธิ์เพื่อทดสอบติดตั้งใหม่: `./reset-permissions.sh`
 
 ## ⚙️ ปรับแต่ง (แก้ที่หัวไฟล์ `flow.py` แล้ว restart)
 
