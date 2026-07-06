@@ -51,8 +51,29 @@ class Recorder:
         self._q = queue.Queue()
         self._stream = None
 
+    @staticmethod
+    def _real_mic():
+        """Fallback when the system default input is the loopback driver:
+        recording from BlackHole in mic mode captures silence. Pick a real
+        microphone instead (USB mic first, then the built-in one)."""
+        inputs = [d for d in sd.query_devices()
+                  if d["max_input_channels"] > 0
+                  and LOOPBACK_DEVICE.split()[0].lower() not in d["name"].lower()]
+        for pref in ("maono", "macbook"):
+            for d in inputs:
+                if pref in d["name"].lower():
+                    return d["index"]
+        return inputs[0]["index"] if inputs else None
+
     def start(self, device=INPUT_DEVICE):
         self._q = queue.Queue()
+        if device is None:
+            default = sd.query_devices(sd.default.device[0])
+            if LOOPBACK_DEVICE.split()[0].lower() in default["name"].lower():
+                device = self._real_mic()
+                name = sd.query_devices(device)["name"] if device is not None else None
+                print(f"default input is {default['name']!r} (loopback); "
+                      f"using {name!r} instead", flush=True)
         info = sd.query_devices(device if device is not None else sd.default.device[0])
         # loopback drivers (BlackHole) run at their own rate; capture natively
         # and resample to SAMPLE_RATE in stop()
@@ -276,8 +297,21 @@ class FlowApp(rumps.App):
     # --------------------------------------------------------- pipeline
     def _process(self, audio: np.ndarray):
         try:
-            if float(np.abs(audio).max()) < SILENCE_PEAK:
-                self._flash_error("no audio captured — check sound routing")
+            peak = float(np.abs(audio).max())
+            if peak < SILENCE_PEAK:
+                if peak == 0.0:
+                    # exact zeros = macOS gave us no signal at all: mic
+                    # permission denied/reset, or a loopback device with
+                    # nothing routed to it
+                    self._flash_error(
+                        "no audio (all zeros) — check System Settings → "
+                        "Privacy & Security → Microphone allows Python"
+                    )
+                else:
+                    self._flash_error(
+                        f"audio too quiet (peak {peak:.4f}) — "
+                        "check mic input volume"
+                    )
                 return
             if self.loopback:
                 model, lang = LOOPBACK_MODEL, LOOPBACK_LANGUAGE
