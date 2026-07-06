@@ -146,6 +146,7 @@ class FlowApp(rumps.App):
         self.multilingual = False
         self.transcribe = None  # loaded lazily
 
+        self._request_mic_access()
         threading.Thread(target=self._load_model, daemon=True).start()
 
         self.listener = None
@@ -198,6 +199,33 @@ class FlowApp(rumps.App):
         if self.recording or self.busy:
             return
         self._start_listener()
+
+    def _request_mic_access(self):
+        """Force the macOS microphone permission dialog. Opening a CoreAudio
+        input stream without an explicit request gets silently denied
+        (recordings are all zeros, no prompt) on newer macOS."""
+        try:
+            import objc
+            objc.loadBundle("AVFoundation", {},
+                            "/System/Library/Frameworks/AVFoundation.framework")
+            dev = objc.lookUpClass("AVCaptureDevice")
+            status = int(dev.authorizationStatusForMediaType_("soun"))
+            names = {0: "not determined", 1: "restricted",
+                     2: "DENIED", 3: "authorized"}
+            print(f"mic permission: {names.get(status, status)}", flush=True)
+            if status == 0:
+                dev.requestAccessForMediaType_completionHandler_(
+                    "soun",
+                    lambda ok: print(f"mic permission granted: {bool(ok)}",
+                                     flush=True),
+                )
+            elif status == 2:
+                self._flash_error(
+                    "mic DENIED — System Settings → Privacy & Security → "
+                    "Microphone → enable Python"
+                )
+        except Exception as e:
+            print(f"mic permission check failed: {e}", flush=True)
 
     def _load_model(self):
         self.title = ICON_BUSY
