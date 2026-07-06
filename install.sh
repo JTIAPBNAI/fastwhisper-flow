@@ -74,11 +74,16 @@ cat > com.fastwhisper.flow.plist <<EOF
     </array>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>/tmp/fastwhisper-flow.log</string>
     <key>StandardErrorPath</key><string>/tmp/fastwhisper-flow.log</string>
 </dict>
 </plist>
 EOF
-echo "✓ สร้าง launch agent (เปิดตอน login: cp com.fastwhisper.flow.plist ~/Library/LaunchAgents/)"
+# install it so the app starts at login and relaunches itself if it crashes;
+# flow.sh (and therefore the Toggle app) starts/stops it via launchctl
+mkdir -p ~/Library/LaunchAgents
+cp com.fastwhisper.flow.plist ~/Library/LaunchAgents/
+echo "✓ ติดตั้ง launch agent (เริ่มอัตโนมัติตอน login, เด้งกลับเองถ้าแครช)"
 
 # 5. build the double-click toggle app for this machine
 rm -rf "FastWhisper Toggle.app"

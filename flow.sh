@@ -3,16 +3,27 @@
 DIR="$(cd "$(dirname "$0")" && pwd)"
 PY="$DIR/.venv/bin/python"
 LOG=/tmp/fastwhisper-flow.log
+AGENT="$HOME/Library/LaunchAgents/com.fastwhisper.flow.plist"
+DOMAIN="gui/$(id -u)"
 
 running() { pgrep -f "flow.py" >/dev/null; }
 
 case "$1" in
   start)
     if running; then echo "Already running (menu bar 🎙)."; exit 0; fi
-    cd "$DIR" && nohup "$PY" flow.py >"$LOG" 2>&1 &
+    # prefer launchd: starts at login and relaunches automatically on crash
+    if [[ -f "$AGENT" ]]; then
+      launchctl bootstrap "$DOMAIN" "$AGENT" 2>/dev/null \
+        || launchctl kickstart "$DOMAIN/com.fastwhisper.flow" 2>/dev/null \
+        || { cd "$DIR" && nohup "$PY" flow.py >"$LOG" 2>&1 & }
+    else
+      cd "$DIR" && nohup "$PY" flow.py >"$LOG" 2>&1 &
+    fi
     echo "Started. Wait for 🎙 in the menu bar (⏳ = model loading)."
     ;;
   stop)
+    # unload the agent first, or launchd's KeepAlive would respawn the app
+    launchctl bootout "$DOMAIN/com.fastwhisper.flow" 2>/dev/null
     pkill -f "flow.py" && echo "Stopped." || echo "Not running."
     ;;
   restart)
