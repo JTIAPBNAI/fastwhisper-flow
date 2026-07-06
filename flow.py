@@ -176,6 +176,7 @@ class FlowApp(rumps.App):
         self._last_listener_restart = 0.0
         self.shift_down = False
         self.option_down = False
+        self.hotkey_down = False
         self.loopback = False
         self.multilingual = False
         self.transcribe = None  # loaded lazily
@@ -243,7 +244,8 @@ class FlowApp(rumps.App):
                 time.time() - self._last_listener_restart
                 > LISTENER_REFRESH_SECONDS
             )
-            if not self.recording and not self.busy:
+            input_active = self.hotkey_down or self.shift_down or self.option_down
+            if not self.recording and not self.busy and not input_active:
                 if not listener_alive:
                     print("health: hotkey listener not alive; restarting", flush=True)
                     self._start_listener()
@@ -436,6 +438,9 @@ class FlowApp(rumps.App):
     def _reset_state(self):
         self.recording = False
         self.busy = False
+        self.hotkey_down = False
+        self.shift_down = False
+        self.option_down = False
         if self.recorder._stream is not None:
             try:
                 self.recorder._stream.stop()
@@ -455,8 +460,11 @@ class FlowApp(rumps.App):
             print("busy watchdog: resetting stuck state", flush=True)
             self.busy = False
             self.title = ICON_IDLE
+        if key == HOTKEY:
+            self.hotkey_down = True
         if key == HOTKEY and not self.recording and not self.busy:
             if self.transcribe is None:
+                print("hotkey pressed while model is still loading", flush=True)
                 self._update_health_menu()
                 return  # model still loading
             self.loopback = self.shift_down
@@ -471,6 +479,11 @@ class FlowApp(rumps.App):
                 self._flash_error(msg)
                 return
             self.recording = True
+            print(
+                "recording started "
+                f"(loopback={self.loopback}, multilingual={self.multilingual})",
+                flush=True,
+            )
             if self.loopback:
                 self.title = ICON_REC_SYS
             elif self.multilingual:
@@ -483,6 +496,8 @@ class FlowApp(rumps.App):
             self.shift_down = False
         if key in (Key.alt, Key.alt_l, Key.alt_r):
             self.option_down = False
+        if key == HOTKEY:
+            self.hotkey_down = False
         if key == HOTKEY and self.recording:
             self.recording = False
             try:
@@ -492,7 +507,13 @@ class FlowApp(rumps.App):
                 self.recorder._stream = None
                 self._flash_error(f"recording failed: {e}")
                 return
+            duration = len(audio) / SAMPLE_RATE if SAMPLE_RATE else 0
+            print(
+                f"recording stopped: {duration:.2f}s, samples={len(audio)}",
+                flush=True,
+            )
             if len(audio) < SAMPLE_RATE * MIN_SECONDS:
+                print("recording ignored: too short", flush=True)
                 self.title = ICON_IDLE
                 return
             self.busy = True
@@ -501,6 +522,13 @@ class FlowApp(rumps.App):
             threading.Thread(
                 target=self._process, args=(audio,), daemon=True
             ).start()
+        elif key == HOTKEY:
+            print(
+                "hotkey release ignored "
+                f"(recording={self.recording}, busy={self.busy}, "
+                f"model_ready={self.transcribe is not None})",
+                flush=True,
+            )
 
     # --------------------------------------------------------- pipeline
     def _process(self, audio: np.ndarray):
