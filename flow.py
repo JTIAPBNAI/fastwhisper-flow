@@ -183,6 +183,7 @@ class FlowApp(rumps.App):
         self.access_item = rumps.MenuItem("Access: Check")
         self.input_item = rumps.MenuItem("Input: Check")
         self.model_item = rumps.MenuItem("Model: Load")
+        self.update_item = rumps.MenuItem("Update: Ready")
         self.last_error_item = rumps.MenuItem("Error: None")
         self.menu = [
             f"FastWhisper Flow v{APP_VERSION}",
@@ -193,6 +194,7 @@ class FlowApp(rumps.App):
             self.access_item,
             self.input_item,
             self.model_item,
+            self.update_item,
             self.last_error_item,
             None,
             rumps.MenuItem("Restart Listener", callback=self._menu_restart_listener),
@@ -395,26 +397,30 @@ class FlowApp(rumps.App):
 
     def _menu_check_update(self, _sender):
         if self.recording or self.busy:
+            self.update_item.title = "Update: Busy"
             rumps.notification(
                 "FastWhisper Flow",
                 "Update skipped",
                 "Finish recording/transcribing first",
             )
             return
+        self.update_item.title = "Update: Checking"
+        self._last_error = "None"
+        self._update_health_menu()
         threading.Thread(target=self._check_update, daemon=True).start()
 
     def _check_update(self):
         try:
-            self._last_error = "Checking update"
-            self._update_health_menu()
+            print("update: checking latest release", flush=True)
             release = self._fetch_latest_release()
             tag = release.get("tag_name", "")
             latest_version = tag.removeprefix("v")
             if not latest_version:
                 raise RuntimeError("latest release has no tag")
             if not _is_newer_version(latest_version, APP_VERSION):
-                self._last_error = f"Up to date ({APP_VERSION})"
+                self.update_item.title = f"Update: Current v{APP_VERSION}"
                 self._update_health_menu()
+                print(f"update: already current ({APP_VERSION})", flush=True)
                 rumps.notification(
                     "FastWhisper Flow",
                     "Already up to date",
@@ -423,6 +429,7 @@ class FlowApp(rumps.App):
                 return
 
             asset = self._find_update_asset(release)
+            self.update_item.title = f"Update: v{latest_version}"
             rumps.notification(
                 "FastWhisper Flow",
                 f"Updating to v{latest_version}",
@@ -430,6 +437,7 @@ class FlowApp(rumps.App):
             )
             self._apply_update(asset["browser_download_url"], latest_version)
         except Exception as e:
+            self.update_item.title = "Update: Failed"
             self._flash_error(f"update failed: {e}")
 
     def _fetch_latest_release(self):
@@ -458,8 +466,10 @@ class FlowApp(rumps.App):
                 url,
                 headers={"User-Agent": f"FastWhisperFlow/{APP_VERSION}"},
             )
+            self.update_item.title = "Update: Downloading"
             with urllib.request.urlopen(req, timeout=120) as resp:
                 zip_path.write_bytes(resp.read())
+            self.update_item.title = "Update: Installing"
             with zipfile.ZipFile(zip_path) as zf:
                 zf.extractall(tmp_path)
             payload = self._find_payload_dir(tmp_path)
@@ -485,6 +495,7 @@ class FlowApp(rumps.App):
             f"Updated to v{latest_version}",
             "Restarting app",
         )
+        self.update_item.title = "Update: Restarting"
         time.sleep(1)
         self._restart_app()
 
