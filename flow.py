@@ -45,6 +45,7 @@ SAMPLE_RATE = 16000
 MIN_SECONDS = 0.5        # ignore accidental taps
 HEALTH_INTERVAL = 30     # lightweight status check; does not open the mic
 LISTENER_REFRESH_SECONDS = 300
+MENU_VALUE_MAX = 28
 # -----------------------------------------------------------------------
 
 ICON_IDLE = "🎙"
@@ -139,13 +140,13 @@ def paste_text(text: str):
 class FlowApp(rumps.App):
     def __init__(self):
         super().__init__(ICON_IDLE, quit_button="Quit")
-        self.status_item = rumps.MenuItem("Status: Starting")
-        self.listener_item = rumps.MenuItem("Hotkey: Starting")
-        self.mic_item = rumps.MenuItem("Microphone: Checking")
-        self.access_item = rumps.MenuItem("Accessibility: Checking")
-        self.input_item = rumps.MenuItem("Input: Checking")
-        self.model_item = rumps.MenuItem("Model: Loading")
-        self.last_error_item = rumps.MenuItem("Last error: None")
+        self.status_item = rumps.MenuItem("State: Start")
+        self.listener_item = rumps.MenuItem("Keys: Start")
+        self.mic_item = rumps.MenuItem("Mic: Check")
+        self.access_item = rumps.MenuItem("Access: Check")
+        self.input_item = rumps.MenuItem("Input: Check")
+        self.model_item = rumps.MenuItem("Model: Load")
+        self.last_error_item = rumps.MenuItem("Error: None")
         self.menu = [
             f"FastWhisper Flow v{APP_VERSION}",
             None,
@@ -269,35 +270,42 @@ class FlowApp(rumps.App):
         elif self.busy:
             status = "Transcribing"
         elif self.transcribe is None:
-            status = "Loading model"
+            status = "Loading"
         elif not listener_ok:
-            status = "Hotkey listener restarting"
+            status = "Keys restarting"
         elif not mic_status.startswith("Authorized"):
-            status = "Needs microphone permission"
+            status = "Mic permission"
         elif access_status.startswith("Missing"):
-            status = "Needs Accessibility permission"
+            status = "Access permission"
         elif input_status.startswith("Unavailable"):
-            status = "No input device"
+            status = "No input"
         else:
             status = "Ready"
 
-        self.status_item.title = f"Status: {status}"
+        self.status_item.title = f"State: {status}"
         self.listener_item.title = (
-            "Hotkey: Active" if listener_ok else "Hotkey: Restarting"
+            "Keys: Active" if listener_ok else "Keys: Restarting"
         )
-        self.mic_item.title = f"Microphone: {mic_status}"
-        self.access_item.title = f"Accessibility: {access_status}"
-        self.input_item.title = f"Input: {input_status}"
+        self.mic_item.title = f"Mic: {self._compact(mic_status)}"
+        self.access_item.title = f"Access: {self._compact(access_status)}"
+        self.input_item.title = f"Input: {self._compact(input_status)}"
         self.model_item.title = (
             "Model: Ready" if self.transcribe is not None else "Model: Loading"
         )
-        self.last_error_item.title = f"Last error: {self._last_error}"
+        self.last_error_item.title = f"Error: {self._compact(self._last_error)}"
 
         if not self.recording and not self.busy and time.time() >= self._error_until:
             if self.transcribe is None:
                 self.title = ICON_BUSY
             else:
                 self.title = ICON_IDLE if status == "Ready" else ICON_WARN
+
+    @staticmethod
+    def _compact(text, limit=MENU_VALUE_MAX):
+        text = str(text).replace("\n", " ").strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit - 1].rstrip() + "…"
 
     def _mic_permission_status(self):
         try:
@@ -314,10 +322,15 @@ class FlowApp(rumps.App):
 
     def _accessibility_status(self):
         try:
-            from Quartz import AXIsProcessTrusted
+            try:
+                from ApplicationServices import AXIsProcessTrusted
+            except Exception:
+                import Quartz
+                AXIsProcessTrusted = Quartz.AXIsProcessTrusted
             return "Allowed" if AXIsProcessTrusted() else "Missing"
         except Exception as e:
-            return f"Unknown ({e})"
+            print(f"accessibility status unavailable: {e}", flush=True)
+            return "Unknown"
 
     def _input_status(self):
         try:
@@ -328,7 +341,8 @@ class FlowApp(rumps.App):
                 return "Unavailable"
             return name
         except Exception as e:
-            return f"Unavailable ({e})"
+            print(f"input status unavailable: {e}", flush=True)
+            return "Unavailable"
 
     def _menu_restart_listener(self, _sender):
         print("menu: restarting hotkey listener", flush=True)
@@ -409,7 +423,7 @@ class FlowApp(rumps.App):
     def _flash_error(self, msg: str):
         print(msg, flush=True)
         self._last_error = msg[:80]
-        self.last_error_item.title = f"Last error: {self._last_error}"
+        self.last_error_item.title = f"Error: {self._compact(self._last_error)}"
         self.title = ICON_WARN
         self._error_until = time.time() + 3.0
         threading.Timer(3.0, self._clear_error_if_current).start()
