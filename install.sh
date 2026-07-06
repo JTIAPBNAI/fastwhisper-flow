@@ -25,7 +25,7 @@ if [[ "$STAGE" == "all" || "$STAGE" == "deps" ]] && [[ ! -d .venv ]]; then
   echo "-- สร้าง virtualenv และติดตั้งไลบรารี (ครั้งเดียว)..."
   "$PYBIN" -m venv .venv
   .venv/bin/pip install -q --upgrade pip
-  .venv/bin/pip install -q mlx-whisper sounddevice pynput rumps
+  .venv/bin/pip install -q mlx-whisper sounddevice pynput rumps pyobjc-framework-AVFoundation
 fi
 echo "✓ dependencies พร้อม"
 

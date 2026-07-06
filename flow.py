@@ -205,10 +205,7 @@ class FlowApp(rumps.App):
         input stream without an explicit request gets silently denied
         (recordings are all zeros, no prompt) on newer macOS."""
         try:
-            import objc
-            objc.loadBundle("AVFoundation", {},
-                            "/System/Library/Frameworks/AVFoundation.framework")
-            dev = objc.lookUpClass("AVCaptureDevice")
+            from AVFoundation import AVCaptureDevice as dev
             status = int(dev.authorizationStatusForMediaType_("soun"))
             names = {0: "not determined", 1: "restricted",
                      2: "DENIED", 3: "authorized"}
