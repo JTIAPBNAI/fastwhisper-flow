@@ -43,6 +43,8 @@ SILENCE_PEAK = 0.005      # skip transcription below this level — forcing a
                           # language on silence makes Whisper hallucinate
 SAMPLE_RATE = 16000
 MIN_SECONDS = 0.5        # ignore accidental taps
+HEALTH_INTERVAL = 30     # lightweight status check; does not open the mic
+LISTENER_REFRESH_SECONDS = 300
 # -----------------------------------------------------------------------
 
 ICON_IDLE = "🎙"
@@ -50,6 +52,8 @@ ICON_REC = "🔴"
 ICON_REC_EN = "🔵"        # multilingual mic mode (Right ⌘ + Option)
 ICON_REC_SYS = "🟢"       # system-audio loopback mode (Right ⌘ + Shift)
 ICON_BUSY = "⏳"
+ICON_WARN = "⚠️"
+LOG_PATH = "/tmp/fastwhisper-flow.log"
 
 
 class Recorder:
@@ -135,8 +139,27 @@ def paste_text(text: str):
 class FlowApp(rumps.App):
     def __init__(self):
         super().__init__(ICON_IDLE, quit_button="Quit")
+        self.status_item = rumps.MenuItem("Status: Starting")
+        self.listener_item = rumps.MenuItem("Hotkey: Starting")
+        self.mic_item = rumps.MenuItem("Microphone: Checking")
+        self.access_item = rumps.MenuItem("Accessibility: Checking")
+        self.input_item = rumps.MenuItem("Input: Checking")
+        self.model_item = rumps.MenuItem("Model: Loading")
+        self.last_error_item = rumps.MenuItem("Last error: None")
         self.menu = [
             f"FastWhisper Flow v{APP_VERSION}",
+            None,
+            self.status_item,
+            self.listener_item,
+            self.mic_item,
+            self.access_item,
+            self.input_item,
+            self.model_item,
+            self.last_error_item,
+            None,
+            rumps.MenuItem("Restart Listener", callback=self._menu_restart_listener),
+            rumps.MenuItem("Test Mic", callback=self._menu_test_mic),
+            rumps.MenuItem("Open Log", callback=self._menu_open_log),
             None,
             "🎙 Right ⌘ (ค้าง) — พูดไทย → 🔴",
             "🌐 Right ⌘ + Option — English / auto-detect → 🔵",
@@ -149,6 +172,8 @@ class FlowApp(rumps.App):
         self.busy = False
         self._busy_since = 0.0
         self._error_until = 0.0
+        self._last_error = "None"
+        self._last_listener_restart = 0.0
         self.shift_down = False
         self.option_down = False
         self.loopback = False
@@ -168,8 +193,9 @@ class FlowApp(rumps.App):
         # but keys stop arriving. Rebuild the listener on wake and on a
         # periodic watchdog so a dead tap never lasts more than a minute.
         self._register_wake_observer()
-        self._watchdog = rumps.Timer(self._watchdog_tick, 60)
-        self._watchdog.start()
+        self._health_timer = rumps.Timer(self._health_tick, HEALTH_INTERVAL)
+        self._health_timer.start()
+        self._health_tick(None)
 
     def _start_listener(self):
         with self._listener_lock:
@@ -183,6 +209,7 @@ class FlowApp(rumps.App):
                 on_press=self._on_press, on_release=self._on_release
             )
             self.listener.start()
+            self._last_listener_restart = time.time()
 
     def _register_wake_observer(self):
         try:
@@ -201,13 +228,143 @@ class FlowApp(rumps.App):
         print("system woke — restarting hotkey listener", flush=True)
         self._reset_state()
         self._start_listener()
+        self._health_tick(None)
 
-    def _watchdog_tick(self, _timer):
-        # don't yank the listener mid-dictation; the tap can't be dead if
-        # we're recording anyway
-        if self.recording or self.busy:
-            return
+    def _health_tick(self, _timer):
+        """Cheap self-healing check. It does not open the microphone or run
+        Whisper; it only inspects app state, permissions, and device metadata."""
+        try:
+            if self.busy and time.time() - self._busy_since > 60:
+                print("busy watchdog: resetting stuck state", flush=True)
+                self._reset_state()
+
+            listener_alive = self.listener is not None and self.listener.is_alive()
+            stale_listener = (
+                time.time() - self._last_listener_restart
+                > LISTENER_REFRESH_SECONDS
+            )
+            if not self.recording and not self.busy:
+                if not listener_alive:
+                    print("health: hotkey listener not alive; restarting", flush=True)
+                    self._start_listener()
+                    listener_alive = True
+                elif stale_listener:
+                    print("health: refreshing hotkey listener", flush=True)
+                    self._start_listener()
+
+            self._update_health_menu()
+        except Exception as e:
+            print(f"health check failed: {e}", flush=True)
+
+    def _update_health_menu(self):
+        listener_ok = self.listener is not None and self.listener.is_alive()
+        mic_status = self._mic_permission_status()
+        access_status = self._accessibility_status()
+        input_status = self._input_status()
+
+        if self.recording:
+            status = "Recording"
+        elif self.busy:
+            status = "Transcribing"
+        elif self.transcribe is None:
+            status = "Loading model"
+        elif not listener_ok:
+            status = "Hotkey listener restarting"
+        elif not mic_status.startswith("Authorized"):
+            status = "Needs microphone permission"
+        elif access_status.startswith("Missing"):
+            status = "Needs Accessibility permission"
+        elif input_status.startswith("Unavailable"):
+            status = "No input device"
+        else:
+            status = "Ready"
+
+        self.status_item.title = f"Status: {status}"
+        self.listener_item.title = (
+            "Hotkey: Active" if listener_ok else "Hotkey: Restarting"
+        )
+        self.mic_item.title = f"Microphone: {mic_status}"
+        self.access_item.title = f"Accessibility: {access_status}"
+        self.input_item.title = f"Input: {input_status}"
+        self.model_item.title = (
+            "Model: Ready" if self.transcribe is not None else "Model: Loading"
+        )
+        self.last_error_item.title = f"Last error: {self._last_error}"
+
+        if not self.recording and not self.busy and time.time() >= self._error_until:
+            if self.transcribe is None:
+                self.title = ICON_BUSY
+            else:
+                self.title = ICON_IDLE if status == "Ready" else ICON_WARN
+
+    def _mic_permission_status(self):
+        try:
+            from AVFoundation import AVCaptureDevice as dev
+            status = int(dev.authorizationStatusForMediaType_("soun"))
+            return {
+                0: "Not requested",
+                1: "Restricted",
+                2: "Denied",
+                3: "Authorized",
+            }.get(status, f"Unknown ({status})")
+        except Exception as e:
+            return f"Unknown ({e})"
+
+    def _accessibility_status(self):
+        try:
+            from Quartz import AXIsProcessTrusted
+            return "Allowed" if AXIsProcessTrusted() else "Missing"
+        except Exception as e:
+            return f"Unknown ({e})"
+
+    def _input_status(self):
+        try:
+            device = sd.query_devices(kind="input")
+            channels = int(device.get("max_input_channels", 0))
+            name = device.get("name", "Unknown")
+            if channels <= 0:
+                return "Unavailable"
+            return name
+        except Exception as e:
+            return f"Unavailable ({e})"
+
+    def _menu_restart_listener(self, _sender):
+        print("menu: restarting hotkey listener", flush=True)
+        self._reset_state()
         self._start_listener()
+        self._update_health_menu()
+        rumps.notification("FastWhisper Flow", "Hotkey listener restarted", "")
+
+    def _menu_open_log(self, _sender):
+        subprocess.run(["touch", LOG_PATH])
+        subprocess.run(["open", LOG_PATH])
+
+    def _menu_test_mic(self, _sender):
+        if self.recording or self.busy:
+            rumps.notification("FastWhisper Flow", "Mic test skipped", "App is busy")
+            return
+        threading.Thread(target=self._test_mic, daemon=True).start()
+
+    def _test_mic(self):
+        try:
+            rumps.notification("FastWhisper Flow", "Testing microphone", "Speak now")
+            rate = SAMPLE_RATE
+            rec = sd.rec(int(1.5 * rate), samplerate=rate, channels=1)
+            sd.wait()
+            peak = float(np.abs(rec).max())
+            msg = "OK" if peak > 0.05 else "Too low or blocked"
+            self._last_error = "None" if peak > 0.05 else f"Mic test: peak {peak:.3f}"
+            print(f"mic test peak: {peak:.3f} -> {msg}", flush=True)
+            rumps.notification(
+                "FastWhisper Flow",
+                f"Mic test: {msg}",
+                f"Peak {peak:.3f}",
+            )
+        except Exception as e:
+            self._last_error = f"Mic test failed: {e}"
+            self._flash_error(self._last_error)
+        finally:
+            self._update_health_menu()
 
     def _request_mic_access(self):
         """Force the macOS microphone permission dialog. Opening a CoreAudio
@@ -249,13 +406,15 @@ class FlowApp(rumps.App):
 
     def _flash_error(self, msg: str):
         print(msg, flush=True)
-        self.title = "⚠️"
+        self._last_error = msg[:80]
+        self.last_error_item.title = f"Last error: {self._last_error}"
+        self.title = ICON_WARN
         self._error_until = time.time() + 3.0
         threading.Timer(3.0, self._clear_error_if_current).start()
 
     def _clear_error_if_current(self):
-        if self.title == "⚠️" and not self.recording and not self.busy:
-            self.title = ICON_IDLE
+        if self.title == ICON_WARN and not self.recording and not self.busy:
+            self._update_health_menu()
 
     # ------------------------------------------------------------ hotkey
     # NOTE: pynput kills the listener thread permanently if a callback
@@ -277,7 +436,13 @@ class FlowApp(rumps.App):
     def _reset_state(self):
         self.recording = False
         self.busy = False
-        self.recorder._stream = None
+        if self.recorder._stream is not None:
+            try:
+                self.recorder._stream.stop()
+                self.recorder._stream.close()
+            except Exception:
+                pass
+            self.recorder._stream = None
         self.title = ICON_IDLE
 
     def _handle_press(self, key):
@@ -292,6 +457,7 @@ class FlowApp(rumps.App):
             self.title = ICON_IDLE
         if key == HOTKEY and not self.recording and not self.busy:
             if self.transcribe is None:
+                self._update_health_menu()
                 return  # model still loading
             self.loopback = self.shift_down
             self.multilingual = self.option_down
@@ -371,10 +537,11 @@ class FlowApp(rumps.App):
             print(f"transcription error: {e}")
         finally:
             self.busy = False
-            if self.title == "⚠️" and time.time() < self._error_until:
+            if self.title == ICON_WARN and time.time() < self._error_until:
                 pass  # keep the current error flash visible
             else:
                 self.title = ICON_IDLE
+            self._update_health_menu()
 
 
 if __name__ == "__main__":
