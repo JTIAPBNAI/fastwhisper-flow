@@ -79,6 +79,7 @@ cd fastwhisper-flow
 - เปิด/ปิดแอป: ดับเบิลคลิก `FastWhisper Toggle.app` (มี notification ยืนยัน)
 - ดูสถานะใน menu bar ได้ทันที: Hotkey, Microphone, Accessibility, Input, Model
 - แก้ปัญหาเบื้องต้นจาก menu bar ได้: `Restart Listener`, `Test Mic`, `Open Log`
+- อัปเดตจาก menu bar ได้: `Check Update` จะดาวน์โหลด release ล่าสุด แล้วอัปเดตเฉพาะไฟล์แอปโดยไม่ลง `.venv` หรือโมเดลใหม่
 - รีเซ็ตสิทธิ์เพื่อทดสอบติดตั้งใหม่: `./reset-permissions.sh`
 
 ## ⚙️ ปรับแต่ง (แก้ที่หัวไฟล์ `flow.py` แล้ว restart)

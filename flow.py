@@ -6,9 +6,16 @@ the frontmost app. Everything runs on-device via mlx-whisper (Metal).
 
 import os
 import queue
+import json
+import re
+import shutil
 import subprocess
+import sys
+import tempfile
 import threading
 import time
+import urllib.request
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +53,19 @@ MIN_SECONDS = 0.5        # ignore accidental taps
 HEALTH_INTERVAL = 30     # lightweight status check; does not open the mic
 LISTENER_REFRESH_SECONDS = 300
 MENU_VALUE_MAX = 28
+GITHUB_LATEST_RELEASE = (
+    "https://api.github.com/repos/JTIAPBNAI/fastwhisper-flow/releases/latest"
+)
+INSTALLER_ASSET = "FastWhisperFlow-Installer.zip"
+UPDATE_FILES = {
+    "VERSION",
+    "README.md",
+    "cleanup.py",
+    "flow.py",
+    "flow.sh",
+    "install.sh",
+    "reset-permissions.sh",
+}
 # -----------------------------------------------------------------------
 
 ICON_IDLE = "🎙"
@@ -55,6 +75,7 @@ ICON_REC_SYS = "🟢"       # system-audio loopback mode (Right ⌘ + Shift)
 ICON_BUSY = "⏳"
 ICON_WARN = "⚠️"
 LOG_PATH = "/tmp/fastwhisper-flow.log"
+APP_DIR = Path(__file__).resolve().parent
 
 
 class Recorder:
@@ -137,6 +158,22 @@ def paste_text(text: str):
         print(f"pasted {len(text)} chars", flush=True)
 
 
+def _version_tuple(version: str):
+    parts = re.findall(r"\d+", version)
+    return tuple(int(p) for p in parts[:3])
+
+
+def _is_newer_version(latest: str, current: str):
+    latest_tuple = _version_tuple(latest)
+    current_tuple = _version_tuple(current)
+    if not latest_tuple or not current_tuple:
+        return latest.strip() != current.strip()
+    max_len = max(len(latest_tuple), len(current_tuple), 3)
+    latest_tuple += (0,) * (max_len - len(latest_tuple))
+    current_tuple += (0,) * (max_len - len(current_tuple))
+    return latest_tuple > current_tuple
+
+
 class FlowApp(rumps.App):
     def __init__(self):
         super().__init__(ICON_IDLE, quit_button="Quit")
@@ -160,6 +197,7 @@ class FlowApp(rumps.App):
             None,
             rumps.MenuItem("Restart Listener", callback=self._menu_restart_listener),
             rumps.MenuItem("Test Mic", callback=self._menu_test_mic),
+            rumps.MenuItem("Check Update", callback=self._menu_check_update),
             rumps.MenuItem("Open Log", callback=self._menu_open_log),
             None,
             "🎙 Right ⌘ (ค้าง) — พูดไทย → 🔴",
@@ -354,6 +392,120 @@ class FlowApp(rumps.App):
     def _menu_open_log(self, _sender):
         subprocess.run(["touch", LOG_PATH])
         subprocess.run(["open", LOG_PATH])
+
+    def _menu_check_update(self, _sender):
+        if self.recording or self.busy:
+            rumps.notification(
+                "FastWhisper Flow",
+                "Update skipped",
+                "Finish recording/transcribing first",
+            )
+            return
+        threading.Thread(target=self._check_update, daemon=True).start()
+
+    def _check_update(self):
+        try:
+            self._last_error = "Checking update"
+            self._update_health_menu()
+            release = self._fetch_latest_release()
+            tag = release.get("tag_name", "")
+            latest_version = tag.removeprefix("v")
+            if not latest_version:
+                raise RuntimeError("latest release has no tag")
+            if not _is_newer_version(latest_version, APP_VERSION):
+                self._last_error = f"Up to date ({APP_VERSION})"
+                self._update_health_menu()
+                rumps.notification(
+                    "FastWhisper Flow",
+                    "Already up to date",
+                    f"Current version {APP_VERSION}",
+                )
+                return
+
+            asset = self._find_update_asset(release)
+            rumps.notification(
+                "FastWhisper Flow",
+                f"Updating to v{latest_version}",
+                "Downloading update",
+            )
+            self._apply_update(asset["browser_download_url"], latest_version)
+        except Exception as e:
+            self._flash_error(f"update failed: {e}")
+
+    def _fetch_latest_release(self):
+        req = urllib.request.Request(
+            GITHUB_LATEST_RELEASE,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": f"FastWhisperFlow/{APP_VERSION}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _find_update_asset(self, release):
+        assets = release.get("assets") or []
+        for asset in assets:
+            if asset.get("name") == INSTALLER_ASSET:
+                return asset
+        raise RuntimeError(f"{INSTALLER_ASSET} not found in latest release")
+
+    def _apply_update(self, url, latest_version):
+        with tempfile.TemporaryDirectory(prefix="fastwhisper-update-") as tmp:
+            tmp_path = Path(tmp)
+            zip_path = tmp_path / INSTALLER_ASSET
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": f"FastWhisperFlow/{APP_VERSION}"},
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                zip_path.write_bytes(resp.read())
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extractall(tmp_path)
+            payload = self._find_payload_dir(tmp_path)
+            updated = []
+            for name in UPDATE_FILES:
+                src = payload / name
+                if not src.exists():
+                    continue
+                dst = APP_DIR / name
+                shutil.copy2(src, dst)
+                if name.endswith(".sh"):
+                    dst.chmod(dst.stat().st_mode | 0o755)
+                updated.append(name)
+            if "flow.py" not in updated or "VERSION" not in updated:
+                raise RuntimeError("update payload is incomplete")
+
+        print(
+            f"updated to v{latest_version}; files: {', '.join(sorted(updated))}",
+            flush=True,
+        )
+        rumps.notification(
+            "FastWhisper Flow",
+            f"Updated to v{latest_version}",
+            "Restarting app",
+        )
+        time.sleep(1)
+        self._restart_app()
+
+    @staticmethod
+    def _find_payload_dir(root: Path):
+        matches = list(root.glob("*.app/Contents/Resources/payload"))
+        if not matches:
+            matches = list(root.rglob("Contents/Resources/payload"))
+        if not matches:
+            raise RuntimeError("installer payload not found")
+        return matches[0]
+
+    def _restart_app(self):
+        self._reset_state()
+        with self._listener_lock:
+            if self.listener is not None:
+                try:
+                    self.listener.stop()
+                except Exception:
+                    pass
+        os.execv(sys.executable, [sys.executable, str(APP_DIR / "flow.py")])
 
     def _menu_test_mic(self, _sender):
         if self.recording or self.busy:
