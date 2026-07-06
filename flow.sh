@@ -3,30 +3,44 @@
 DIR="$(cd "$(dirname "$0")" && pwd)"
 PY="$DIR/.venv/bin/python"
 LOG=/tmp/fastwhisper-flow.log
+PIDFILE=/tmp/fastwhisper-flow.pid
 DOMAIN="gui/$(id -u)"
 
-running() { pgrep -f "flow.py" >/dev/null; }
+pid_running() {
+  [[ -f "$PIDFILE" ]] || return 1
+  local pid
+  pid="$(<"$PIDFILE")"
+  [[ "$pid" == <-> ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  ps -p "$pid" -o command= | grep -F "$DIR/flow.py" >/dev/null
+}
 
 case "$1" in
   start)
-    if running; then echo "Already running (menu bar 🎙)."; exit 0; fi
+    if pid_running; then echo "Already running (menu bar 🎙)."; exit 0; fi
     # NOTE: must NOT run under launchd — macOS then attributes the mic
     # permission to bare Python and refuses to show the permission dialog
     # (recordings become all zeros). nohup keeps the Toggle app (a real
     # app bundle with a mic usage description) as the responsible process.
-    cd "$DIR" && nohup "$PY" flow.py >"$LOG" 2>&1 &
+    cd "$DIR" && nohup "$PY" "$DIR/flow.py" >"$LOG" 2>&1 &
+    echo $! >"$PIDFILE"
     echo "Started. Wait for 🎙 in the menu bar (⏳ = model loading)."
     ;;
   stop)
     # stop any legacy launchd job from older installs before killing Python
     launchctl bootout "$DOMAIN/com.fastwhisper.flow" 2>/dev/null
-    pkill -f "flow.py" && echo "Stopped." || echo "Not running."
+    if pid_running; then
+      kill "$(<"$PIDFILE")" && rm -f "$PIDFILE" && echo "Stopped."
+    else
+      rm -f "$PIDFILE"
+      echo "Not running."
+    fi
     ;;
   restart)
     "$0" stop; sleep 1; "$0" start
     ;;
   status)
-    if running; then echo "RUNNING (pid $(pgrep -f flow.py | head -1))"
+    if pid_running; then echo "RUNNING (pid $(<"$PIDFILE"))"
     else echo "NOT RUNNING"; fi
     ;;
   mic)

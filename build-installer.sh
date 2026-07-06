@@ -22,8 +22,8 @@ unzip -q "$ZIP"
 [[ -d "$APP" ]] || { echo "ERROR: ไม่พบ $APP ใน zip"; exit 1; }
 
 PAYLOAD="$APP/Contents/Resources/payload"
-cp "$DIR/flow.py" "$DIR/install.sh" "$DIR/cleanup.py" "$DIR/flow.sh" "$DIR/README.md" "$DIR/VERSION" "$DIR/reset-permissions.sh" "$PAYLOAD/"
-echo "✓ อัปเดต payload: flow.py install.sh cleanup.py flow.sh README.md VERSION reset-permissions.sh"
+cp "$DIR/flow.py" "$DIR/install.sh" "$DIR/cleanup.py" "$DIR/flow.sh" "$DIR/README.md" "$DIR/VERSION" "$DIR/reset-permissions.sh" "$DIR/requirements.txt" "$PAYLOAD/"
+echo "✓ อัปเดต payload: flow.py install.sh cleanup.py flow.sh README.md VERSION reset-permissions.sh requirements.txt"
 
 if [[ -f "$DIR/installer.applescript" ]]; then
   VERSION="$(<"$DIR/VERSION")"

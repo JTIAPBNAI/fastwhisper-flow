@@ -6,6 +6,7 @@ the frontmost app. Everything runs on-device via mlx-whisper (Metal).
 
 import os
 import queue
+import hashlib
 import json
 import re
 import shlex
@@ -56,7 +57,12 @@ MENU_VALUE_MAX = 28
 GITHUB_LATEST_RELEASE = (
     "https://api.github.com/repos/JTIAPBNAI/fastwhisper-flow/releases/latest"
 )
+GITHUB_ASSET_URL_PREFIX = (
+    "https://github.com/JTIAPBNAI/fastwhisper-flow/releases/download/"
+)
 INSTALLER_ASSET = "FastWhisperFlow-Installer.zip"
+MAX_UPDATE_ZIP_BYTES = 25 * 1024 * 1024
+MAX_UPDATE_PAYLOAD_BYTES = 5 * 1024 * 1024
 UPDATE_FILES = {
     "VERSION",
     "README.md",
@@ -65,6 +71,7 @@ UPDATE_FILES = {
     "flow.sh",
     "install.sh",
     "reset-permissions.sh",
+    "requirements.txt",
 }
 # -----------------------------------------------------------------------
 
@@ -429,13 +436,14 @@ class FlowApp(rumps.App):
                 return
 
             asset = self._find_update_asset(release)
+            self._validate_update_asset(asset)
             self.update_item.title = f"Update: v{latest_version}"
             rumps.notification(
                 "FastWhisper Flow",
                 f"Updating to v{latest_version}",
                 "Downloading update",
             )
-            self._apply_update(asset["browser_download_url"], latest_version)
+            self._apply_update(asset, latest_version)
         except Exception as e:
             self.update_item.title = "Update: Failed"
             self._flash_error(f"update failed: {e}")
@@ -458,33 +466,38 @@ class FlowApp(rumps.App):
                 return asset
         raise RuntimeError(f"{INSTALLER_ASSET} not found in latest release")
 
-    def _apply_update(self, url, latest_version):
+    def _validate_update_asset(self, asset):
+        url = asset.get("browser_download_url", "")
+        size = int(asset.get("size") or 0)
+        digest = asset.get("digest") or ""
+        if not url.startswith(GITHUB_ASSET_URL_PREFIX):
+            raise RuntimeError("update asset URL is not trusted")
+        if size <= 0 or size > MAX_UPDATE_ZIP_BYTES:
+            raise RuntimeError("update asset size is invalid")
+        if not digest or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+            raise RuntimeError("update asset digest is invalid")
+
+    def _apply_update(self, asset, latest_version):
         with tempfile.TemporaryDirectory(prefix="fastwhisper-update-") as tmp:
             tmp_path = Path(tmp)
             zip_path = tmp_path / INSTALLER_ASSET
+            url = asset["browser_download_url"]
             req = urllib.request.Request(
                 url,
                 headers={"User-Agent": f"FastWhisperFlow/{APP_VERSION}"},
             )
             self.update_item.title = "Update: Downloading"
+            expected_digest = asset.get("digest") or ""
             with urllib.request.urlopen(req, timeout=120) as resp:
-                zip_path.write_bytes(resp.read())
+                self._download_update(resp, zip_path, expected_digest)
             self.update_item.title = "Update: Installing"
             with zipfile.ZipFile(zip_path) as zf:
-                zf.extractall(tmp_path)
-            payload = self._find_payload_dir(tmp_path)
-            updated = []
-            for name in UPDATE_FILES:
-                src = payload / name
-                if not src.exists():
-                    continue
-                dst = APP_DIR / name
-                shutil.copy2(src, dst)
-                if name.endswith(".sh"):
-                    dst.chmod(dst.stat().st_mode | 0o755)
-                updated.append(name)
+                payload_prefix = self._find_payload_prefix(zf)
+                stage_dir = tmp_path / "payload-stage"
+                updated = self._stage_update_payload(zf, payload_prefix, stage_dir)
             if "flow.py" not in updated or "VERSION" not in updated:
                 raise RuntimeError("update payload is incomplete")
+            self._install_update_payload(stage_dir, updated)
 
         print(
             f"updated to v{latest_version}; files: {', '.join(sorted(updated))}",
@@ -500,13 +513,68 @@ class FlowApp(rumps.App):
         self._restart_app()
 
     @staticmethod
-    def _find_payload_dir(root: Path):
-        matches = list(root.glob("*.app/Contents/Resources/payload"))
-        if not matches:
-            matches = list(root.rglob("Contents/Resources/payload"))
-        if not matches:
-            raise RuntimeError("installer payload not found")
-        return matches[0]
+    def _download_update(resp, zip_path: Path, expected_digest: str):
+        expected_sha = expected_digest.removeprefix("sha256:").lower()
+        digest = hashlib.sha256()
+        total = 0
+        with zip_path.open("wb") as out:
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_UPDATE_ZIP_BYTES:
+                    raise RuntimeError("update download is too large")
+                digest.update(chunk)
+                out.write(chunk)
+        actual_sha = digest.hexdigest()
+        if expected_sha and actual_sha != expected_sha:
+            raise RuntimeError("update digest mismatch")
+
+    @staticmethod
+    def _find_payload_prefix(zf: zipfile.ZipFile):
+        prefixes = {
+            name.split("Contents/Resources/payload/", 1)[0]
+            + "Contents/Resources/payload/"
+            for name in zf.namelist()
+            if "Contents/Resources/payload/" in name and not name.endswith("/")
+        }
+        if len(prefixes) != 1:
+            raise RuntimeError("installer payload is ambiguous")
+        return prefixes.pop()
+
+    @staticmethod
+    def _stage_update_payload(zf: zipfile.ZipFile, payload_prefix: str, stage_dir: Path):
+        stage_dir.mkdir()
+        updated = []
+        total = 0
+        infos = {info.filename: info for info in zf.infolist()}
+        for name in sorted(UPDATE_FILES):
+            member = payload_prefix + name
+            info = infos.get(member)
+            if info is None:
+                continue
+            if info.is_dir() or info.file_size < 0:
+                raise RuntimeError("update payload contains invalid entry")
+            total += info.file_size
+            if total > MAX_UPDATE_PAYLOAD_BYTES:
+                raise RuntimeError("update payload is too large")
+            dst = stage_dir / name
+            with zf.open(info) as src, dst.open("wb") as out:
+                shutil.copyfileobj(src, out)
+            updated.append(name)
+        return updated
+
+    @staticmethod
+    def _install_update_payload(stage_dir: Path, updated):
+        for name in updated:
+            src = stage_dir / name
+            dst = APP_DIR / name
+            tmp_dst = APP_DIR / f".{name}.update"
+            shutil.copy2(src, tmp_dst)
+            if name.endswith(".sh"):
+                tmp_dst.chmod(tmp_dst.stat().st_mode | 0o755)
+            os.replace(tmp_dst, dst)
 
     def _restart_app(self):
         pid = os.getpid()

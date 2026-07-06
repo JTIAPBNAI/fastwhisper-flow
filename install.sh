@@ -30,7 +30,11 @@ if [[ "$STAGE" == "all" || "$STAGE" == "deps" ]] && [[ ! -d .venv ]]; then
   echo "-- สร้าง virtualenv และติดตั้งไลบรารี (ครั้งเดียว)..."
   "$PYBIN" -m venv .venv
   .venv/bin/pip install -q --upgrade pip
-  .venv/bin/pip install -q mlx-whisper sounddevice pynput rumps pyobjc-framework-AVFoundation
+  if [[ -f requirements.txt ]]; then
+    .venv/bin/pip install -q -r requirements.txt
+  else
+    .venv/bin/pip install -q mlx-whisper==0.4.3 sounddevice==0.5.5 pynput==1.8.2 rumps==0.4.0 pyobjc-framework-AVFoundation==12.2.1 pyobjc-framework-ApplicationServices==12.2.1 pyobjc-framework-Quartz==12.2.1
+  fi
 fi
 echo "✓ dependencies พร้อม"
 
@@ -91,7 +95,7 @@ osacompile -o "FastWhisper Toggle.app" -e "
 set dir to \"$DIR\"
 set appVersion to \"$APP_VERSION\"
 try
-    do shell script \"pgrep -f flow.py\"
+    do shell script \"cd \" & quoted form of dir & \" && ./flow.sh status | grep RUNNING\"
     do shell script \"cd \" & quoted form of dir & \" && ./flow.sh stop\"
     display notification \"Dictation stopped\" with title \"FastWhisper Flow v\" & appVersion
 on error
