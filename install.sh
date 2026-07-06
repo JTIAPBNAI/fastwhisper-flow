@@ -60,6 +60,19 @@ if ! system_profiler SPAudioDataType 2>/dev/null | grep -q "BlackHole 2ch"; then
   fi
 fi
 
+# 3.7 ensure Python.app can request the microphone — without a usage
+# description macOS denies mic access SILENTLY (recordings are all zeros,
+# no permission dialog ever appears)
+PYAPP=$(.venv/bin/python -c "import sys,os;p=os.path.join(sys.base_prefix,'Resources','Python.app');print(p if os.path.exists(p) else '')")
+if [[ -n "$PYAPP" ]] && ! plutil -p "$PYAPP/Contents/Info.plist" 2>/dev/null | grep -q NSMicrophoneUsageDescription; then
+  echo "-- เพิ่มสิทธิ์ขอไมโครโฟนให้ Python.app (ครั้งเดียว อาจถามรหัสผ่าน)..."
+  if ! plutil -insert NSMicrophoneUsageDescription -string "FastWhisper Flow needs the microphone for dictation" "$PYAPP/Contents/Info.plist" 2>/dev/null; then
+    sudo plutil -insert NSMicrophoneUsageDescription -string "FastWhisper Flow needs the microphone for dictation" "$PYAPP/Contents/Info.plist"
+  fi
+  codesign --force --deep -s - "$PYAPP" 2>/dev/null || sudo codesign --force --deep -s - "$PYAPP"
+  echo "✓ Python.app ขอสิทธิ์ไมโครโฟนได้แล้ว"
+fi
+
 # 4. generate launch-agent plist with this machine's paths
 cat > com.fastwhisper.flow.plist <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
