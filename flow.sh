@@ -15,9 +15,19 @@ pid_running() {
   ps -p "$pid" -o command= | grep -F "$DIR/flow.py" >/dev/null
 }
 
+find_running_pid() {
+  pgrep -f "$PY $DIR/flow.py" | head -1
+}
+
 case "$1" in
   start)
     if pid_running; then echo "Already running (menu bar 🎙)."; exit 0; fi
+    existing="$(find_running_pid)"
+    if [[ -n "$existing" ]]; then
+      echo "$existing" >"$PIDFILE"
+      echo "Already running (menu bar 🎙)."
+      exit 0
+    fi
     # NOTE: must NOT run under launchd — macOS then attributes the mic
     # permission to bare Python and refuses to show the permission dialog
     # (recordings become all zeros). nohup keeps the Toggle app (a real
@@ -41,6 +51,9 @@ case "$1" in
     ;;
   status)
     if pid_running; then echo "RUNNING (pid $(<"$PIDFILE"))"
+    elif existing="$(find_running_pid)" && [[ -n "$existing" ]]; then
+      echo "$existing" >"$PIDFILE"
+      echo "RUNNING (pid $existing)"
     else echo "NOT RUNNING"; fi
     ;;
   mic)

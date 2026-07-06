@@ -584,10 +584,13 @@ class FlowApp(rumps.App):
             f"PID={pid}; APP_DIR={app_dir}; LOG={log_path}; "
             "("
             "while kill -0 \"$PID\" 2>/dev/null; do sleep 0.2; done; "
-            "cd \"$APP_DIR\" && ./flow.sh start"
+            "cd \"$APP_DIR\"; "
+            "if [[ -d \"FastWhisper Toggle.app\" ]]; then "
+            "open -g -n \"FastWhisper Toggle.app\"; "
+            "else ./flow.sh start; fi"
             ") >> \"$LOG\" 2>&1 &"
         )
-        print("update: scheduling external restart", flush=True)
+        print("update: scheduling external restart through Toggle app", flush=True)
         subprocess.Popen(
             ["/bin/zsh", "-lc", script],
             stdin=subprocess.DEVNULL,
