@@ -127,10 +127,56 @@ class FlowApp(rumps.App):
 
         threading.Thread(target=self._load_model, daemon=True).start()
 
-        self.listener = keyboard.Listener(
-            on_press=self._on_press, on_release=self._on_release
-        )
-        self.listener.start()
+        self.listener = None
+        self._listener_lock = threading.Lock()
+        self._start_listener()
+
+        # macOS silently disables pynput's CGEventTap after sleep / screen
+        # lock (kCGEventTapDisabledByTimeout|UserInput) and pynput never
+        # re-enables it: the thread stays alive and the icon looks normal,
+        # but keys stop arriving. Rebuild the listener on wake and on a
+        # periodic watchdog so a dead tap never lasts more than a minute.
+        self._register_wake_observer()
+        self._watchdog = rumps.Timer(self._watchdog_tick, 60)
+        self._watchdog.start()
+
+    def _start_listener(self):
+        with self._listener_lock:
+            old, self.listener = self.listener, None
+            if old is not None:
+                try:
+                    old.stop()
+                except Exception:
+                    pass
+            self.listener = keyboard.Listener(
+                on_press=self._on_press, on_release=self._on_release
+            )
+            self.listener.start()
+
+    def _register_wake_observer(self):
+        try:
+            from AppKit import NSWorkspace
+            nc = NSWorkspace.sharedWorkspace().notificationCenter()
+            for name in ("NSWorkspaceDidWakeNotification",
+                         "NSWorkspaceScreensDidWakeNotification",
+                         "NSWorkspaceSessionDidBecomeActiveNotification"):
+                nc.addObserverForName_object_queue_usingBlock_(
+                    name, None, None, self._on_wake
+                )
+        except Exception as e:
+            print(f"wake observer unavailable: {e}", flush=True)
+
+    def _on_wake(self, _note):
+        print("system woke — restarting hotkey listener", flush=True)
+        self._reset_state()
+        self._start_listener()
+
+    def _watchdog_tick(self, _timer):
+        # don't yank the listener mid-dictation; the tap can't be dead if
+        # we're recording anyway
+        if self.recording or self.busy:
+            return
+        self._start_listener()
 
     def _load_model(self):
         self.title = ICON_BUSY
