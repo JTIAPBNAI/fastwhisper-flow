@@ -165,32 +165,17 @@ def _frontmost_app_info():
         return None
 
 
-def _activate_app(pid: int):
-    try:
-        from AppKit import NSRunningApplication
-        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
-        if app is None:
-            return False
-        # 2 = NSApplicationActivateIgnoringOtherApps. Importing the enum is
-        # brittle across PyObjC versions, while the value is stable.
-        return bool(app.activateWithOptions_(2))
-    except Exception as e:
-        print(f"target app activation failed: {e}", flush=True)
-        return False
-
-
 def paste_text(text: str, target=None):
-    """Put text on the clipboard and simulate Cmd+V in the frontmost app."""
+    """Put text on the clipboard and paste into the currently focused field."""
     # force a full UTF-8 locale — LC_ALL=C in the parent env would otherwise
     # make pbcopy mangle Thai text into "?"
     env = {**os.environ, "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8",
            "LC_CTYPE": "en_US.UTF-8"}
     subprocess.run("pbcopy", input=text.encode("utf-8"), env=env)
     if target and target.get("pid"):
-        ok = _activate_app(target["pid"])
         print(
-            f"paste target: {target.get('name')} "
-            f"(pid {target.get('pid')}, activated={ok})",
+            f"paste observed target: {target.get('name')} "
+            f"(pid {target.get('pid')}); preserving current focus",
             flush=True,
         )
     time.sleep(0.1)
