@@ -54,6 +54,7 @@ AUTO_GAIN_TARGET_PEAK = 0.2
 MAX_AUTO_GAIN = 2000.0
 SAMPLE_RATE = 16000
 MIN_SECONDS = 0.5        # ignore accidental taps
+TRANSCRIBE_TIMEOUT_SECONDS = 20
 HEALTH_INTERVAL = 30     # lightweight status check; does not open the mic
 LISTENER_REFRESH_SECONDS = 300
 MENU_VALUE_MAX = 28
@@ -267,6 +268,7 @@ class FlowApp(rumps.App):
         self.loopback = False
         self.multilingual = False
         self.paste_target = None
+        self._job_id = 0
         self.transcribe = None  # loaded lazily
 
         self._request_mic_access()
@@ -742,6 +744,7 @@ class FlowApp(rumps.App):
             self._reset_state()
 
     def _reset_state(self):
+        self._job_id += 1
         self.recording = False
         self.busy = False
         self.hotkey_down = False
@@ -828,8 +831,22 @@ class FlowApp(rumps.App):
             self.busy = True
             self._busy_since = time.time()
             self.title = ICON_BUSY
+            self._job_id += 1
+            job_id = self._job_id
+            loopback = self.loopback
+            multilingual = self.multilingual
+            paste_target = self.paste_target
+            timeout = threading.Timer(
+                TRANSCRIBE_TIMEOUT_SECONDS,
+                self._timeout_job,
+                args=(job_id,),
+            )
+            timeout.daemon = True
+            timeout.start()
             threading.Thread(
-                target=self._process, args=(audio,), daemon=True
+                target=self._process,
+                args=(audio, job_id, loopback, multilingual, paste_target),
+                daemon=True,
             ).start()
         elif key == HOTKEY:
             print(
@@ -840,7 +857,27 @@ class FlowApp(rumps.App):
             )
 
     # --------------------------------------------------------- pipeline
-    def _process(self, audio: np.ndarray):
+    def _timeout_job(self, job_id: int):
+        if self.busy and job_id == self._job_id:
+            print(
+                f"transcription timeout after {TRANSCRIBE_TIMEOUT_SECONDS}s; "
+                "resetting UI and discarding stale result",
+                flush=True,
+            )
+            self._job_id += 1
+            self.busy = False
+            self.title = ICON_WARN
+            self._flash_error("transcription timed out — try again")
+            self._update_health_menu()
+
+    def _process(
+        self,
+        audio: np.ndarray,
+        job_id: int,
+        loopback: bool,
+        multilingual: bool,
+        paste_target,
+    ):
         try:
             peak = float(np.abs(audio).max())
             rms = float(np.sqrt(np.mean(np.square(audio)))) if len(audio) else 0.0
@@ -861,27 +898,31 @@ class FlowApp(rumps.App):
                     f"new_peak {boosted_peak:.3f})",
                     flush=True,
                 )
-            if self.loopback:
+            if loopback:
                 model, lang = LOOPBACK_MODEL, LOOPBACK_LANGUAGE
-            elif self.multilingual:
+            elif multilingual:
                 model, lang = LOOPBACK_MODEL, MULTILINGUAL_LANGUAGE
             else:
                 model, lang = MODEL, LANGUAGE
             result = self.transcribe(
                 audio, path_or_hf_repo=model, language=lang
             )
+            if job_id != self._job_id:
+                print("discarding stale transcription result", flush=True)
+                return
             text = clean(result["text"])
             if text:
-                paste_text(text, self.paste_target)
+                paste_text(text, paste_target)
         except Exception as e:
             print(f"transcription error: {e}")
         finally:
-            self.busy = False
-            if self.title == ICON_WARN and time.time() < self._error_until:
-                pass  # keep the current error flash visible
-            else:
-                self.title = ICON_IDLE
-            self._update_health_menu()
+            if job_id == self._job_id:
+                self.busy = False
+                if self.title == ICON_WARN and time.time() < self._error_until:
+                    pass  # keep the current error flash visible
+                else:
+                    self.title = ICON_IDLE
+                self._update_health_menu()
 
 
 if __name__ == "__main__":
