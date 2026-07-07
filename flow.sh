@@ -16,7 +16,7 @@ pid_running() {
 }
 
 find_running_pid() {
-  pgrep -f "$PY $DIR/flow.py" | head -1
+  pgrep -f "$DIR/flow.py" | head -1
 }
 
 case "$1" in
@@ -34,6 +34,11 @@ case "$1" in
     # app bundle with a mic usage description) as the responsible process.
     cd "$DIR" && nohup "$PY" "$DIR/flow.py" >"$LOG" 2>&1 &
     echo $! >"$PIDFILE"
+    sleep 0.5
+    existing="$(find_running_pid)"
+    if [[ -n "$existing" ]]; then
+      echo "$existing" >"$PIDFILE"
+    fi
     echo "Started. Wait for 🎙 in the menu bar (⏳ = model loading)."
     ;;
   stop)
@@ -41,6 +46,8 @@ case "$1" in
     launchctl bootout "$DOMAIN/com.fastwhisper.flow" 2>/dev/null
     if pid_running; then
       kill "$(<"$PIDFILE")" && rm -f "$PIDFILE" && echo "Stopped."
+    elif existing="$(find_running_pid)" && [[ -n "$existing" ]]; then
+      kill "$existing" && rm -f "$PIDFILE" && echo "Stopped."
     else
       rm -f "$PIDFILE"
       echo "Not running."
