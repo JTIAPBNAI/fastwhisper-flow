@@ -47,8 +47,11 @@ LOOPBACK_MODEL = "mlx-community/whisper-large-v3-turbo"  # general multilingual
 # model for system audio — the Thai fine-tune above skews detection to Thai
 MULTILINGUAL_LANGUAGE = None  # hold Right ⌘ + Option: mic dictation with the
 # multilingual model above, auto-detect language (for English / heavy mixing)
-SILENCE_PEAK = 0.005      # skip transcription below this level — forcing a
-                          # language on silence makes Whisper hallucinate
+SILENCE_PEAK = 0.005      # quiet recordings below this are auto-boosted first
+NO_SIGNAL_PEAK = 0.00002  # below this, CoreAudio effectively gave us silence
+NO_SIGNAL_RMS = 0.000005
+AUTO_GAIN_TARGET_PEAK = 0.2
+MAX_AUTO_GAIN = 2000.0
 SAMPLE_RATE = 16000
 MIN_SECONDS = 0.5        # ignore accidental taps
 HEALTH_INTERVAL = 30     # lightweight status check; does not open the mic
@@ -840,21 +843,24 @@ class FlowApp(rumps.App):
     def _process(self, audio: np.ndarray):
         try:
             peak = float(np.abs(audio).max())
-            if peak < SILENCE_PEAK:
-                if peak == 0.0:
-                    # exact zeros = macOS gave us no signal at all: mic
-                    # permission denied/reset, or a loopback device with
-                    # nothing routed to it
-                    self._flash_error(
-                        "no audio (all zeros) — check System Settings → "
-                        "Privacy & Security → Microphone allows Python"
-                    )
-                else:
-                    self._flash_error(
-                        f"audio too quiet (peak {peak:.4f}) — "
-                        "check mic input volume"
-                    )
+            rms = float(np.sqrt(np.mean(np.square(audio)))) if len(audio) else 0.0
+            if peak <= NO_SIGNAL_PEAK or rms <= NO_SIGNAL_RMS:
+                # near-zero samples = macOS/CoreAudio gave us no usable signal:
+                # mic permission reset, muted input, or an unrouted loopback.
+                self._flash_error(
+                    f"no usable audio (peak {peak:.4f}) — check mic input"
+                )
                 return
+            if peak < SILENCE_PEAK:
+                gain = min(AUTO_GAIN_TARGET_PEAK / peak, MAX_AUTO_GAIN)
+                audio = np.clip(audio * gain, -1.0, 1.0).astype(np.float32)
+                boosted_peak = float(np.abs(audio).max())
+                print(
+                    "quiet audio auto-boosted "
+                    f"(peak {peak:.4f}, rms {rms:.6f}, gain {gain:.1f}, "
+                    f"new_peak {boosted_peak:.3f})",
+                    flush=True,
+                )
             if self.loopback:
                 model, lang = LOOPBACK_MODEL, LOOPBACK_LANGUAGE
             elif self.multilingual:
