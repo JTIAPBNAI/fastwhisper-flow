@@ -359,10 +359,10 @@ class FlowApp(rumps.App):
             )
             input_active = self.hotkey_down or self.shift_down or self.option_down
             if not self.recording and not self.busy and not input_active:
-                # keep the PortAudio device list fresh off the hotkey path
-                threading.Thread(
-                    target=self.recorder.refresh_devices, daemon=True
-                ).start()
+                # keep the PortAudio device list fresh off the hotkey path;
+                # synchronous so the menu update below never queries devices
+                # while PortAudio is mid re-init (-> spurious ⚠️ "No input")
+                self.recorder.refresh_devices()
                 if not listener_alive:
                     print("health: hotkey listener not alive; restarting", flush=True)
                     self._start_listener()
