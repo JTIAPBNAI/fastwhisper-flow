@@ -468,6 +468,20 @@ class FlowApp(rumps.App):
         self._update_health_menu()
         threading.Thread(target=self._check_update, daemon=True).start()
 
+    @staticmethod
+    def _alert(title: str, message: str):
+        """Modal dialog via osascript: always visible, unlike notifications,
+        which macOS hides unless the app is allowed in Notification settings."""
+        subprocess.Popen(
+            ["osascript",
+             "-e", "on run argv",
+             "-e", "display alert (item 1 of argv) message (item 2 of argv)"
+                   " giving up after 15",
+             "-e", "end run",
+             title, message],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
     def _check_update(self):
         try:
             print("update: checking latest release", flush=True)
@@ -485,6 +499,11 @@ class FlowApp(rumps.App):
                     "Already up to date",
                     f"Current version {APP_VERSION}",
                 )
+                self._alert(
+                    "FastWhisper Flow ✅",
+                    f"You're up to date.\n\nInstalled: v{APP_VERSION}\n"
+                    f"Latest release: v{latest_version}",
+                )
                 return
 
             asset = self._find_update_asset(release)
@@ -495,10 +514,20 @@ class FlowApp(rumps.App):
                 f"Updating to v{latest_version}",
                 "Downloading update",
             )
+            self._alert(
+                "FastWhisper Flow ⬇️",
+                f"Update found: v{APP_VERSION} → v{latest_version}\n\n"
+                "Downloading and installing now. The app restarts by itself "
+                "when done.",
+            )
             self._apply_update(asset, latest_version)
         except Exception as e:
             self.update_item.title = "Update: Failed"
             self._flash_error(f"update failed: {e}")
+            self._alert(
+                "FastWhisper Flow ⚠️",
+                f"Update check failed:\n{e}",
+            )
 
     def _fetch_latest_release(self):
         req = urllib.request.Request(
@@ -559,6 +588,11 @@ class FlowApp(rumps.App):
             "FastWhisper Flow",
             f"Updated to v{latest_version}",
             "Restarting app",
+        )
+        self._alert(
+            "FastWhisper Flow ✅",
+            f"Updated to v{latest_version}. Restarting now — the 🎙 icon "
+            "reappears in a few seconds.",
         )
         self.update_item.title = "Update: Restarting"
         time.sleep(1)
