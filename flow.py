@@ -42,6 +42,11 @@ INPUT_DEVICE = None      # None = system default; or a name like
 LOOPBACK_DEVICE = "BlackHole 2ch"  # hold Right ⌘ + Shift to capture system
                                    # audio; needs the BlackHole driver and a
                                    # Multi-Output Device routing sound to it
+# virtual/loopback inputs that deliver silence when recorded as a mic; never
+# record dictation from these even if macOS makes one the default input
+VIRTUAL_INPUTS = ("blackhole", "teams audio", "motiv", "maono ai",
+                  "multi-output", "aggregate", "zoomaudio", "loopback")
+REAL_MIC_PREFERENCE = ("maono dm40", "macbook pro microphone")
 LOOPBACK_LANGUAGE = None  # auto-detect for system audio (may be English etc.)
 LOOPBACK_MODEL = "mlx-community/whisper-large-v3-turbo"  # general multilingual
 # model for system audio — the Thai fine-tune above skews detection to Thai
@@ -95,14 +100,32 @@ class Recorder:
         self._stream = None
 
     @staticmethod
+    def _refresh_devices():
+        """PortAudio snapshots the device list once at init; a USB mic that
+        re-enumerated (sleep, hub power) leaves the snapshot stale and streams
+        open against a dead device that records silence. Re-init before each
+        recording so hot-plugged devices are seen."""
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception as e:
+            print(f"device refresh failed: {e}", flush=True)
+
+    @staticmethod
+    def _is_virtual(name: str) -> bool:
+        # some drivers use non-breaking spaces in names ("Maono\xa0AI\xa0…")
+        low = " ".join(name.lower().split())
+        return any(v in low for v in VIRTUAL_INPUTS)
+
+    @staticmethod
     def _real_mic():
-        """Fallback when the system default input is the loopback driver:
-        recording from BlackHole in mic mode captures silence. Pick a real
-        microphone instead (USB mic first, then the built-in one)."""
+        """Fallback when the system default input is a virtual/loopback
+        device: recording from those in mic mode captures silence. Pick a
+        real microphone instead (USB mic first, then the built-in one)."""
         inputs = [d for d in sd.query_devices()
                   if d["max_input_channels"] > 0
-                  and LOOPBACK_DEVICE.split()[0].lower() not in d["name"].lower()]
-        for pref in ("maono", "macbook"):
+                  and not Recorder._is_virtual(d["name"])]
+        for pref in REAL_MIC_PREFERENCE:
             for d in inputs:
                 if pref in d["name"].lower():
                     return d["index"]
@@ -110,14 +133,16 @@ class Recorder:
 
     def start(self, device=INPUT_DEVICE):
         self._q = queue.Queue()
+        self._refresh_devices()
         if device is None:
             default = sd.query_devices(sd.default.device[0])
-            if LOOPBACK_DEVICE.split()[0].lower() in default["name"].lower():
+            if self._is_virtual(default["name"]):
                 device = self._real_mic()
                 name = sd.query_devices(device)["name"] if device is not None else None
-                print(f"default input is {default['name']!r} (loopback); "
+                print(f"default input is {default['name']!r} (virtual); "
                       f"using {name!r} instead", flush=True)
         info = sd.query_devices(device if device is not None else sd.default.device[0])
+        print(f"recording device: {info['name']!r}", flush=True)
         # loopback drivers (BlackHole) run at their own rate; capture natively
         # and resample to SAMPLE_RATE in stop()
         self._rate = int(info["default_samplerate"])
@@ -866,6 +891,7 @@ class FlowApp(rumps.App):
         try:
             peak = float(np.abs(audio).max())
             rms = float(np.sqrt(np.mean(np.square(audio)))) if len(audio) else 0.0
+            print(f"audio level: peak {peak:.4f}, rms {rms:.6f}", flush=True)
             if peak <= NO_SIGNAL_PEAK or rms <= NO_SIGNAL_RMS:
                 # near-zero samples = macOS/CoreAudio gave us no usable signal:
                 # mic permission reset, muted input, or an unrouted loopback.

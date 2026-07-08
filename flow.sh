@@ -32,7 +32,13 @@ case "$1" in
     # permission to bare Python and refuses to show the permission dialog
     # (recordings become all zeros). nohup keeps the Toggle app (a real
     # app bundle with a mic usage description) as the responsible process.
-    cd "$DIR" && nohup "$PY" "$DIR/flow.py" >"$LOG" 2>&1 &
+    # append (not truncate) so evidence from earlier sessions survives
+    # restarts; keep the tail if the log grows past 1 MB
+    if [[ -f "$LOG" && $(stat -f%z "$LOG") -gt 1048576 ]]; then
+      tail -c 524288 "$LOG" >"$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+    fi
+    echo "===== session start $(date '+%Y-%m-%d %H:%M:%S') =====" >>"$LOG"
+    cd "$DIR" && nohup "$PY" "$DIR/flow.py" >>"$LOG" 2>&1 &
     echo $! >"$PIDFILE"
     sleep 0.5
     existing="$(find_running_pid)"
