@@ -218,14 +218,43 @@ def paste_text(text: str, target=None):
         )
     time.sleep(0.1)
     r = subprocess.run(
+        # key code 9 is the physical V key; unlike `keystroke "v"` it works
+        # regardless of the active input source (e.g. Thai layout)
         ["osascript", "-e",
-         'tell application "System Events" to keystroke "v" using command down'],
+         'tell application "System Events" to key code 9 using command down'],
         capture_output=True, text=True,
     )
     if r.returncode != 0:
         print(f"paste failed: {r.stderr.strip()}", flush=True)
     else:
         print(f"pasted {len(text)} chars", flush=True)
+
+
+def _speech_text(result):
+    """Join transcript segments, dropping likely silence hallucinations.
+
+    Whisper invents filler ("Thank you.", "ขอบคุณครับ", subtitle credits)
+    when fed silence or background noise. Such segments carry a high
+    no_speech_prob together with a low avg_logprob, so gate on both —
+    the standard Whisper heuristic.
+    """
+    segments = result.get("segments") or []
+    if not segments:
+        return result.get("text", "")
+    kept = []
+    for seg in segments:
+        if (seg.get("no_speech_prob", 0.0) > 0.6
+                and seg.get("avg_logprob", 0.0) < -0.7):
+            print(
+                "dropped silence segment: "
+                f"{seg.get('text', '').strip()!r} "
+                f"(no_speech {seg.get('no_speech_prob'):.2f}, "
+                f"logprob {seg.get('avg_logprob'):.2f})",
+                flush=True,
+            )
+            continue
+        kept.append(seg.get("text", ""))
+    return "".join(kept)
 
 
 def _version_tuple(version: str):
@@ -997,7 +1026,7 @@ class FlowApp(rumps.App):
             if job_id != self._job_id:
                 print("discarding stale transcription result", flush=True)
                 return
-            text = clean(result["text"])
+            text = clean(_speech_text(result))
             if text:
                 paste_text(text, paste_target)
         except Exception as e:
