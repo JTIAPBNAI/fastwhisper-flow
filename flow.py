@@ -770,6 +770,19 @@ class FlowApp(rumps.App):
             mlx_whisper.transcribe(
                 np.zeros(SAMPLE_RATE, dtype=np.float32), path_or_hf_repo=MODEL
             )
+            # make sure the multilingual model is cached too, then go
+            # offline: mlx_whisper otherwise revalidates the model cache
+            # against huggingface.co on EVERY dictation, adding the
+            # network's latency to each transcription
+            try:
+                import huggingface_hub
+                huggingface_hub.snapshot_download(LOOPBACK_MODEL)
+                os.environ["HF_HUB_OFFLINE"] = "1"
+                # constants are read once at import; flip it live as well
+                huggingface_hub.constants.HF_HUB_OFFLINE = True
+                print("model caches ready; HF hub checks disabled", flush=True)
+            except Exception as e:
+                print(f"model prefetch failed (staying online): {e}", flush=True)
             self.transcribe = mlx_whisper.transcribe
             self.title = ICON_IDLE
         except Exception as e:
@@ -972,8 +985,14 @@ class FlowApp(rumps.App):
                 model, lang = LOOPBACK_MODEL, MULTILINGUAL_LANGUAGE
             else:
                 model, lang = MODEL, LANGUAGE
+            t0 = time.time()
             result = self.transcribe(
                 audio, path_or_hf_repo=model, language=lang
+            )
+            print(
+                f"transcribed {len(audio)/SAMPLE_RATE:.1f}s audio "
+                f"in {time.time() - t0:.1f}s",
+                flush=True,
             )
             if job_id != self._job_id:
                 print("discarding stale transcription result", flush=True)
