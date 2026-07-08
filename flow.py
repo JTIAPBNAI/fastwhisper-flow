@@ -98,18 +98,25 @@ class Recorder:
     def __init__(self):
         self._q = queue.Queue()
         self._stream = None
+        self._sd_lock = threading.Lock()
 
-    @staticmethod
-    def _refresh_devices():
+    def refresh_devices(self):
         """PortAudio snapshots the device list once at init; a USB mic that
         re-enumerated (sleep, hub power) leaves the snapshot stale and streams
-        open against a dead device that records silence. Re-init before each
-        recording so hot-plugged devices are seen."""
-        try:
-            sd._terminate()
-            sd._initialize()
-        except Exception as e:
-            print(f"device refresh failed: {e}", flush=True)
+        open against a dead device that records silence. Re-init periodically
+        so hot-plugged devices are seen.
+
+        NEVER call this from the hotkey press path: it can take long enough
+        that macOS disables the keyboard event tap (tap timeout) and the
+        hotkey goes dead. It runs from the idle health tick instead."""
+        with self._sd_lock:
+            if self._stream is not None:
+                return  # never re-init under an open stream
+            try:
+                sd._terminate()
+                sd._initialize()
+            except Exception as e:
+                print(f"device refresh failed: {e}", flush=True)
 
     @staticmethod
     def _is_virtual(name: str) -> bool:
@@ -133,7 +140,13 @@ class Recorder:
 
     def start(self, device=INPUT_DEVICE):
         self._q = queue.Queue()
-        self._refresh_devices()
+        self._sd_lock.acquire()
+        try:
+            self._start_locked(device)
+        finally:
+            self._sd_lock.release()
+
+    def _start_locked(self, device):
         if device is None:
             default = sd.query_devices(sd.default.device[0])
             if self._is_virtual(default["name"]):
@@ -346,6 +359,10 @@ class FlowApp(rumps.App):
             )
             input_active = self.hotkey_down or self.shift_down or self.option_down
             if not self.recording and not self.busy and not input_active:
+                # keep the PortAudio device list fresh off the hotkey path
+                threading.Thread(
+                    target=self.recorder.refresh_devices, daemon=True
+                ).start()
                 if not listener_alive:
                     print("health: hotkey listener not alive; restarting", flush=True)
                     self._start_listener()
@@ -816,6 +833,12 @@ class FlowApp(rumps.App):
             self.title = ICON_IDLE
         if key == HOTKEY:
             self.hotkey_down = True
+            if self.recording or self.busy:
+                print(
+                    f"hotkey press ignored (recording={self.recording}, "
+                    f"busy={self.busy})",
+                    flush=True,
+                )
         if key == HOTKEY and not self.recording and not self.busy:
             if self.transcribe is None:
                 print("hotkey pressed while model is still loading", flush=True)
