@@ -217,17 +217,24 @@ def paste_text(text: str, target=None):
             flush=True,
         )
     time.sleep(0.1)
-    r = subprocess.run(
-        # key code 9 is the physical V key; unlike `keystroke "v"` it works
-        # regardless of the active input source (e.g. Thai layout)
-        ["osascript", "-e",
-         'tell application "System Events" to key code 9 using command down'],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        print(f"paste failed: {r.stderr.strip()}", flush=True)
-    else:
+    try:
+        # Post ⌘V with Quartz, forcing the modifier flags to exactly Command.
+        # In system-audio mode the user is often still holding Shift when the
+        # transcript lands; System Events' `key code 9 using command down`
+        # merges that held Shift into ⌘⇧V, which many apps ignore. Explicit
+        # CGEvent flags override the physical modifier state. Key code 9 is
+        # the physical V key, so it works under any input source (e.g. Thai).
+        from Quartz import (
+            CGEventCreateKeyboardEvent, CGEventSetFlags, CGEventPost,
+            kCGEventFlagMaskCommand, kCGHIDEventTap,
+        )
+        for key_down in (True, False):
+            ev = CGEventCreateKeyboardEvent(None, 9, key_down)
+            CGEventSetFlags(ev, kCGEventFlagMaskCommand)
+            CGEventPost(kCGHIDEventTap, ev)
         print(f"pasted {len(text)} chars", flush=True)
+    except Exception as e:
+        print(f"paste failed: {e}", flush=True)
 
 
 def _speech_text(result):
