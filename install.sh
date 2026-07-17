@@ -18,10 +18,13 @@ echo "== FastWhisper Flow v$APP_VERSION installer ($STAGE) =="
 # prefer python.org framework Python (its Python.app can be granted Accessibility);
 # avoid Command Line Tools python which hides in /Library/Developer
 PYBIN=""
-for cand in /Library/Frameworks/Python.framework/Versions/3.*/bin/python3 /opt/homebrew/bin/python3; do
+# (N) makes an unmatched zsh glob expand to nothing instead of aborting the
+# installer with "no matches found" on Macs without a python.org installation.
+for cand in /Library/Frameworks/Python.framework/Versions/3.*/bin/python3(N); do
   [[ -x $cand ]] && PYBIN=$cand
 done
-[[ -z $PYBIN ]] && PYBIN=$(command -v python3)
+[[ -z $PYBIN && -x /opt/homebrew/bin/python3 ]] && PYBIN=/opt/homebrew/bin/python3
+[[ -z $PYBIN ]] && PYBIN=$(command -v python3 2>/dev/null || true)
 [[ -n $PYBIN ]] || { echo "ERROR: ไม่พบ python3 — ติดตั้งจาก https://www.python.org ก่อน"; exit 1; }
 echo "✓ Apple Silicon + $($PYBIN --version) ($PYBIN)"
 
