@@ -15,23 +15,82 @@ echo "== FastWhisper Flow v$APP_VERSION installer ($STAGE) =="
 
 # 1. checks
 [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: ต้องเป็น Mac ชิป Apple Silicon (M1 ขึ้นไป)"; exit 1; }
-# prefer python.org framework Python (its Python.app can be granted Accessibility);
-# avoid Command Line Tools python which hides in /Library/Developer
-PYBIN=""
-# (N) makes an unmatched zsh glob expand to nothing instead of aborting the
-# installer with "no matches found" on Macs without a python.org installation.
-for cand in /Library/Frameworks/Python.framework/Versions/3.*/bin/python3(N); do
-  [[ -x $cand ]] && PYBIN=$cand
-done
-[[ -z $PYBIN && -x /opt/homebrew/bin/python3 ]] && PYBIN=/opt/homebrew/bin/python3
-[[ -z $PYBIN ]] && PYBIN=$(command -v python3 2>/dev/null || true)
-[[ -n $PYBIN ]] || { echo "ERROR: ไม่พบ python3 — ติดตั้งจาก https://www.python.org ก่อน"; exit 1; }
+PYTHON_VERSION="3.13.14"
+PYTHON_PKG_URL="https://www.python.org/ftp/python/$PYTHON_VERSION/python-$PYTHON_VERSION-macos11.pkg"
+PYTHON_PKG_SHA256="8e58affb218c155a1dfdc27b291f817129669f8760e7a297adb2e4439ba5d2e8"
+
+is_python313() {
+  [[ -x "$1" ]] && "$1" -c '
+import os, sys
+python_app = os.path.join(sys.base_prefix, "Resources", "Python.app")
+raise SystemExit(sys.version_info[:2] != (3, 13) or not os.path.isdir(python_app))
+' 2>/dev/null
+}
+
+find_python313() {
+  local cand name
+  # Prefer framework builds because their Python.app can be granted Accessibility.
+  for cand in \
+    /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
+    /opt/homebrew/opt/python@3.13/bin/python3.13 \
+    /opt/homebrew/bin/python3.13; do
+    if is_python313 "$cand"; then
+      print -r -- "$cand"
+      return 0
+    fi
+  done
+  for name in python3.13 python3; do
+    cand=$(command -v "$name" 2>/dev/null || true)
+    if [[ -n "$cand" ]] && is_python313 "$cand"; then
+      print -r -- "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+install_python313() {
+  local pkg actual_sha
+  pkg=$(mktemp -t fastwhisper-python)
+  echo "-- ไม่พบ Python 3.13 — กำลังดาวน์โหลด Python $PYTHON_VERSION จาก python.org (~68 MB)..."
+  curl --fail --location --proto '=https' --tlsv1.2 --progress-bar "$PYTHON_PKG_URL" -o "$pkg"
+  actual_sha=$(shasum -a 256 "$pkg" | awk '{print $1}')
+  if [[ "$actual_sha" != "$PYTHON_PKG_SHA256" ]]; then
+    rm -f -- "$pkg"
+    echo "ERROR: checksum ของ Python installer ไม่ถูกต้อง — ยกเลิกเพื่อความปลอดภัย"
+    return 1
+  fi
+
+  echo "-- ติดตั้ง Python $PYTHON_VERSION (macOS จะถามรหัสผ่านผู้ดูแลระบบ)..."
+  if [[ $EUID -eq 0 ]]; then
+    /usr/sbin/installer -pkg "$pkg" -target /
+  else
+    /usr/bin/osascript - "$pkg" <<'APPLESCRIPT'
+on run argv
+  set pkgPath to item 1 of argv
+  do shell script "/usr/sbin/installer -pkg " & quoted form of pkgPath & " -target /" with administrator privileges
+end run
+APPLESCRIPT
+  fi
+  rm -f -- "$pkg"
+}
+
+PYBIN=$(find_python313 || true)
+if [[ -z "$PYBIN" ]]; then
+  install_python313
+  PYBIN=$(find_python313 || true)
+fi
+[[ -n "$PYBIN" ]] || { echo "ERROR: ติดตั้ง Python 3.13 ไม่สำเร็จ"; exit 1; }
 echo "✓ Apple Silicon + $($PYBIN --version) ($PYBIN)"
 
 # 2. virtualenv + dependencies
-if [[ "$STAGE" == "all" || "$STAGE" == "deps" ]] && [[ ! -d .venv ]]; then
-  echo "-- สร้าง virtualenv และติดตั้งไลบรารี (ครั้งเดียว)..."
-  "$PYBIN" -m venv .venv
+if [[ "$STAGE" == "all" || "$STAGE" == "deps" ]]; then
+  if [[ ! -x .venv/bin/python ]] || ! is_python313 .venv/bin/python; then
+    [[ ! -e .venv ]] || rm -rf -- "$DIR/.venv"
+    echo "-- สร้าง Python 3.13 virtualenv..."
+    "$PYBIN" -m venv .venv
+  fi
+  echo "-- ติดตั้งไลบรารี Python ที่จำเป็น..."
   .venv/bin/pip install -q --upgrade pip
   if [[ -f requirements.txt ]]; then
     .venv/bin/pip install -q -r requirements.txt
@@ -118,7 +177,8 @@ chmod +x flow.sh reset-permissions.sh
 echo ""
 echo "== ติดตั้งเสร็จ! ขั้นตอนที่เหลือ (ทำเองครั้งเดียว): =="
 PYAPP=$(.venv/bin/python -c "import sys,os;p=os.path.join(sys.base_prefix,'Resources','Python.app');print(p if os.path.exists(p) else sys.base_prefix)")
+[[ -d "$PYAPP" ]] || { echo "ERROR: ไม่พบ Python.app ที่ $PYAPP"; exit 1; }
 echo "1. System Settings → Privacy & Security → Accessibility → กด + → ⌘⇧G → วางพาธนี้:"
 echo "   $PYAPP"
-echo "2. ดับเบิลคลิก 'FastWhisper Toggle.app' เพื่อเริ่ม FastWhisper Flow v$APP_VERSION รอ 🎙 ใน menu bar"
+echo "2. เปิด 'FastWhisper Toggle.app' เพื่อให้ macOS ลงทะเบียน Python.app แล้วเปิดสิทธิ์ Accessibility"
 echo "3. กด Right ⌘ ค้างแล้วพูด — ครั้งแรก macOS จะถามสิทธิ์ Microphone/System Events → กด Allow"

@@ -4,6 +4,7 @@ Hold RIGHT COMMAND (⌘) to record, release to transcribe and paste into
 the frontmost app. Everything runs on-device via mlx-whisper (Metal).
 """
 
+import gc
 import os
 import queue
 import hashlib
@@ -61,7 +62,7 @@ SAMPLE_RATE = 16000
 MIN_SECONDS = 0.5        # ignore accidental taps
 TRANSCRIBE_TIMEOUT_SECONDS = 20
 HEALTH_INTERVAL = 30     # lightweight status check; does not open the mic
-LISTENER_REFRESH_SECONDS = 300
+WAKE_DEBOUNCE_SECONDS = 2
 MENU_VALUE_MAX = 28
 GITHUB_LATEST_RELEASE = (
     "https://api.github.com/repos/JTIAPBNAI/fastwhisper-flow/releases/latest"
@@ -72,6 +73,7 @@ GITHUB_ASSET_URL_PREFIX = (
 INSTALLER_ASSET = "FastWhisperFlow-Installer.zip"
 MAX_UPDATE_ZIP_BYTES = 25 * 1024 * 1024
 MAX_UPDATE_PAYLOAD_BYTES = 5 * 1024 * 1024
+MLX_CACHE_LIMIT_BYTES = 256 * 1024 * 1024
 UPDATE_FILES = {
     "VERSION",
     "README.md",
@@ -112,11 +114,15 @@ class Recorder:
         with self._sd_lock:
             if self._stream is not None:
                 return  # never re-init under an open stream
-            try:
-                sd._terminate()
-                sd._initialize()
-            except Exception as e:
-                print(f"device refresh failed: {e}", flush=True)
+            self._refresh_devices_locked()
+
+    @staticmethod
+    def _refresh_devices_locked():
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception as e:
+            print(f"device refresh failed: {e}", flush=True)
 
     @staticmethod
     def _is_virtual(name: str) -> bool:
@@ -142,7 +148,20 @@ class Recorder:
         self._q = queue.Queue()
         self._sd_lock.acquire()
         try:
-            self._start_locked(device)
+            try:
+                self._start_locked(device)
+            except Exception:
+                # CoreAudio's device snapshot can become stale after a USB
+                # reconnect. Refresh only after a real open failure instead
+                # of tearing PortAudio down on every health tick.
+                if self._stream is not None:
+                    try:
+                        self._stream.close()
+                    except Exception:
+                        pass
+                    self._stream = None
+                self._refresh_devices_locked()
+                self._start_locked(device)
         finally:
             self._sd_lock.release()
 
@@ -186,6 +205,35 @@ class Recorder:
                 np.arange(len(audio)), audio,
             ).astype(np.float32)
         return audio.flatten()
+
+
+class ResilientKeyboardListener(keyboard.Listener):
+    """A pynput listener that repairs a disabled macOS event tap in place.
+
+    macOS reports event-tap disablement through two special event types.
+    pynput 1.8.2 does not handle them, so the old watchdog replaced the whole
+    listener every five minutes. Long sessions consequently created hundreds
+    of listener threads/event taps. Re-enabling the existing tap is both
+    cheaper and the recovery macOS intends callers to perform.
+    """
+
+    def _handle_message(self, proxy, event_type, event, refcon, injected):
+        from Quartz import (
+            CGEventTapEnable,
+            kCGEventTapDisabledByTimeout,
+            kCGEventTapDisabledByUserInput,
+        )
+
+        if event_type in (
+            kCGEventTapDisabledByTimeout,
+            kCGEventTapDisabledByUserInput,
+        ):
+            CGEventTapEnable(proxy, True)
+            print("hotkey event tap re-enabled", flush=True)
+            return
+        return super()._handle_message(
+            proxy, event_type, event, refcon, injected
+        )
 
 
 def _frontmost_app_info():
@@ -289,6 +337,7 @@ class FlowApp(rumps.App):
         self.access_item = rumps.MenuItem("Access: Check")
         self.input_item = rumps.MenuItem("Input: Check")
         self.model_item = rumps.MenuItem("Model: Load")
+        self.memory_item = rumps.MenuItem("Memory: Managed")
         self.update_item = rumps.MenuItem("Update: Ready")
         self.last_error_item = rumps.MenuItem("Error: None")
         self.menu = [
@@ -300,11 +349,13 @@ class FlowApp(rumps.App):
             self.access_item,
             self.input_item,
             self.model_item,
+            self.memory_item,
             self.update_item,
             self.last_error_item,
             None,
             rumps.MenuItem("Restart Listener", callback=self._menu_restart_listener),
             rumps.MenuItem("Test Mic", callback=self._menu_test_mic),
+            rumps.MenuItem("Release Memory", callback=self._menu_release_memory),
             rumps.MenuItem("Check Update", callback=self._menu_check_update),
             rumps.MenuItem("Open Log", callback=self._menu_open_log),
             None,
@@ -320,7 +371,9 @@ class FlowApp(rumps.App):
         self._busy_since = 0.0
         self._error_until = 0.0
         self._last_error = "None"
-        self._last_listener_restart = 0.0
+        self._last_wake_recovery = 0.0
+        self._wake_observers = []
+        self._model_lock = threading.Lock()
         self.shift_down = False
         self.option_down = False
         self.hotkey_down = False
@@ -329,19 +382,18 @@ class FlowApp(rumps.App):
         self.paste_target = None
         self._job_id = 0
         self.transcribe = None  # loaded lazily
+        self._model_released = False
 
         self._request_mic_access()
+        self._request_accessibility()
         threading.Thread(target=self._load_model, daemon=True).start()
 
         self.listener = None
         self._listener_lock = threading.Lock()
         self._start_listener()
 
-        # macOS silently disables pynput's CGEventTap after sleep / screen
-        # lock (kCGEventTapDisabledByTimeout|UserInput) and pynput never
-        # re-enables it: the thread stays alive and the icon looks normal,
-        # but keys stop arriving. Rebuild the listener on wake and on a
-        # periodic watchdog so a dead tap never lasts more than a minute.
+        # The listener repairs a disabled event tap in place. Wake recovery is
+        # still useful for CoreAudio and for genuinely dead listener threads.
         self._register_wake_observer()
         self._health_timer = rumps.Timer(self._health_tick, HEALTH_INTERVAL)
         self._health_timer.start()
@@ -353,13 +405,22 @@ class FlowApp(rumps.App):
             if old is not None:
                 try:
                     old.stop()
+                    old.join(timeout=2.0)
                 except Exception:
                     pass
-            self.listener = keyboard.Listener(
+                if old.is_alive():
+                    print(
+                        "hotkey listener did not stop within 2s; "
+                        "replacement deferred",
+                        flush=True,
+                    )
+                    self.listener = old
+                    return False
+            self.listener = ResilientKeyboardListener(
                 on_press=self._on_press, on_release=self._on_release
             )
             self.listener.start()
-            self._last_listener_restart = time.time()
+            return True
 
     def _register_wake_observer(self):
         try:
@@ -368,15 +429,21 @@ class FlowApp(rumps.App):
             for name in ("NSWorkspaceDidWakeNotification",
                          "NSWorkspaceScreensDidWakeNotification",
                          "NSWorkspaceSessionDidBecomeActiveNotification"):
-                nc.addObserverForName_object_queue_usingBlock_(
+                observer = nc.addObserverForName_object_queue_usingBlock_(
                     name, None, None, self._on_wake
                 )
+                self._wake_observers.append(observer)
         except Exception as e:
             print(f"wake observer unavailable: {e}", flush=True)
 
     def _on_wake(self, _note):
+        now = time.monotonic()
+        if now - self._last_wake_recovery < WAKE_DEBOUNCE_SECONDS:
+            return
+        self._last_wake_recovery = now
         print("system woke — restarting hotkey listener", flush=True)
         self._reset_state()
+        self.recorder.refresh_devices()
         self._start_listener()
         self._health_tick(None)
 
@@ -389,22 +456,10 @@ class FlowApp(rumps.App):
                 self._reset_state()
 
             listener_alive = self.listener is not None and self.listener.is_alive()
-            stale_listener = (
-                time.time() - self._last_listener_restart
-                > LISTENER_REFRESH_SECONDS
-            )
             input_active = self.hotkey_down or self.shift_down or self.option_down
             if not self.recording and not self.busy and not input_active:
-                # keep the PortAudio device list fresh off the hotkey path;
-                # synchronous so the menu update below never queries devices
-                # while PortAudio is mid re-init (-> spurious ⚠️ "No input")
-                self.recorder.refresh_devices()
                 if not listener_alive:
                     print("health: hotkey listener not alive; restarting", flush=True)
-                    self._start_listener()
-                    listener_alive = True
-                elif stale_listener:
-                    print("health: refreshing hotkey listener", flush=True)
                     self._start_listener()
 
             self._update_health_menu()
@@ -442,7 +497,11 @@ class FlowApp(rumps.App):
         self.access_item.title = f"Access: {self._compact(access_status)}"
         self.input_item.title = f"Input: {self._compact(input_status)}"
         self.model_item.title = (
-            "Model: Ready" if self.transcribe is not None else "Model: Loading"
+            "Model: Released"
+            if self._model_released
+            else "Model: Ready"
+            if self.transcribe is not None
+            else "Model: Loading"
         )
         self.last_error_item.title = f"Error: {self._compact(self._last_error)}"
 
@@ -483,6 +542,18 @@ class FlowApp(rumps.App):
         except Exception as e:
             print(f"accessibility status unavailable: {e}", flush=True)
             return "Unknown"
+
+    @staticmethod
+    def _request_accessibility():
+        """Ask macOS to register Python.app in Accessibility settings."""
+        try:
+            from ApplicationServices import (
+                AXIsProcessTrustedWithOptions,
+                kAXTrustedCheckOptionPrompt,
+            )
+            AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True})
+        except Exception as e:
+            print(f"accessibility request unavailable: {e}", flush=True)
 
     def _input_status(self):
         try:
@@ -752,6 +823,40 @@ class FlowApp(rumps.App):
             return
         threading.Thread(target=self._test_mic, daemon=True).start()
 
+    def _menu_release_memory(self, _sender):
+        if self.recording or self.busy or self.transcribe is None:
+            rumps.notification(
+                "FastWhisper Flow", "Memory release skipped", "App is busy"
+            )
+            return
+        threading.Thread(target=self._release_model_memory, daemon=True).start()
+
+    def _release_model_memory(self):
+        """Unload Whisper weights and return unused MLX buffers to macOS."""
+        try:
+            import mlx.core as mx
+            from mlx_whisper.transcribe import ModelHolder
+
+            with self._model_lock:
+                before = mx.get_active_memory() + mx.get_cache_memory()
+                ModelHolder.model = None
+                ModelHolder.model_path = None
+                gc.collect()
+                mx.clear_cache()
+                after = mx.get_active_memory() + mx.get_cache_memory()
+            released_mb = max(0, before - after) / (1024 * 1024)
+            self._model_released = True
+            self.memory_item.title = f"Memory: Released {released_mb:.0f} MB"
+            self._update_health_menu()
+            print(f"memory: released {released_mb:.0f} MB", flush=True)
+            rumps.notification(
+                "FastWhisper Flow",
+                f"Released {released_mb:.0f} MB",
+                "The speech model reloads on the next dictation",
+            )
+        except Exception as e:
+            self._flash_error(f"memory release failed: {e}")
+
     def _test_mic(self):
         try:
             rumps.notification("FastWhisper Flow", "Testing microphone", "Speak now")
@@ -800,7 +905,19 @@ class FlowApp(rumps.App):
     def _load_model(self):
         self.title = ICON_BUSY
         try:
+            # tqdm's default lock is a multiprocessing RLock on macOS. This
+            # app only uses threads, and the process-wide semaphore otherwise
+            # survives until shutdown and triggers resource_tracker warnings.
+            import tqdm
+            tqdm.tqdm.set_lock(threading.RLock())
+
             import mlx_whisper  # heavy import; also triggers model download
+            import mlx.core as mx
+
+            # MLX otherwise retains free Metal buffers up to its broad device
+            # memory limit. On unified-memory Macs that pressure can spill into
+            # WindowServer and make the desktop stutter during long sessions.
+            mx.set_cache_limit(MLX_CACHE_LIMIT_BYTES)
 
             # warm up so the first real dictation is fast
             mlx_whisper.transcribe(
@@ -820,6 +937,7 @@ class FlowApp(rumps.App):
             except Exception as e:
                 print(f"model prefetch failed (staying online): {e}", flush=True)
             self.transcribe = mlx_whisper.transcribe
+            mx.clear_cache()
             self.title = ICON_IDLE
         except Exception as e:
             self._flash_error(f"model load failed: {e}")
@@ -1022,9 +1140,11 @@ class FlowApp(rumps.App):
             else:
                 model, lang = MODEL, LANGUAGE
             t0 = time.time()
-            result = self.transcribe(
-                audio, path_or_hf_repo=model, language=lang
-            )
+            with self._model_lock:
+                result = self.transcribe(
+                    audio, path_or_hf_repo=model, language=lang
+                )
+            self._model_released = False
             print(
                 f"transcribed {len(audio)/SAMPLE_RATE:.1f}s audio "
                 f"in {time.time() - t0:.1f}s",
@@ -1039,6 +1159,20 @@ class FlowApp(rumps.App):
         except Exception as e:
             print(f"transcription error: {e}")
         finally:
+            # Return transient decoder buffers to the unified-memory pool.
+            # The active model remains loaded for fast subsequent dictation.
+            try:
+                import mlx.core as mx
+
+                cached_mb = mx.get_cache_memory() / (1024 * 1024)
+                mx.clear_cache()
+                if cached_mb >= 1:
+                    print(
+                        f"memory: cleared {cached_mb:.0f} MB MLX cache",
+                        flush=True,
+                    )
+            except Exception as e:
+                print(f"memory cache cleanup failed: {e}", flush=True)
             if job_id == self._job_id:
                 self.busy = False
                 if self.title == ICON_WARN and time.time() < self._error_until:
