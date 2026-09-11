@@ -43,6 +43,8 @@ INPUT_DEVICE = None      # None = system default; or a name like
 LOOPBACK_DEVICE = "BlackHole 2ch"  # hold Right ⌘ + Shift to capture system
                                    # audio; needs the BlackHole driver and a
                                    # Multi-Output Device routing sound to it
+LOOPBACK_OUTPUT = "Multi-Output Device"  # temporary playback route during
+                                          # system-audio recording
 # virtual/loopback inputs that deliver silence when recorded as a mic; never
 # record dictation from these even if macOS makes one the default input
 VIRTUAL_INPUTS = ("blackhole", "teams audio", "motiv", "maono ai",
@@ -63,6 +65,7 @@ MIN_SECONDS = 0.5        # ignore accidental taps
 TRANSCRIBE_TIMEOUT_SECONDS = 20
 HEALTH_INTERVAL = 30     # lightweight status check; does not open the mic
 WAKE_DEBOUNCE_SECONDS = 2
+CHORD_SETTLE_SECONDS = 0.08  # let modifier events arrive before choosing mode
 MENU_VALUE_MAX = 28
 GITHUB_LATEST_RELEASE = (
     "https://api.github.com/repos/JTIAPBNAI/fastwhisper-flow/releases/latest"
@@ -205,6 +208,119 @@ class Recorder:
                 np.arange(len(audio)), audio,
             ).astype(np.float32)
         return audio.flatten()
+
+
+class AudioOutputRouter:
+    """Temporarily route playback through the BlackHole multi-output device."""
+
+    def __init__(self):
+        self._previous = None
+        self._current = None
+        self._error = "audio output routing has not been checked yet"
+
+    def prepare_loopback(self):
+        """Unmute BlackHole without changing the user's preferred input.
+
+        CoreAudio can persist BlackHole's master-input mute across a reboot.
+        The stream still opens normally in that state, but every captured
+        sample is exactly zero.  SwitchAudioSource can repair the mute only
+        while BlackHole is selected, so restore the original input afterward.
+        """
+        previous = None
+        try:
+            previous = self._run("-c", "-t", "input") or None
+            self._run(
+                "-t", "input", "-s", LOOPBACK_DEVICE, "-m", "unmute"
+            )
+            print(f"loopback input unmuted: {LOOPBACK_DEVICE!r}", flush=True)
+        except Exception as e:
+            # Loopback is optional; never prevent normal microphone mode from
+            # starting when BlackHole is not installed or currently offline.
+            print(f"loopback input preparation skipped: {e}", flush=True)
+        finally:
+            if previous and previous != LOOPBACK_DEVICE:
+                try:
+                    self._run("-t", "input", "-s", previous)
+                except Exception as e:
+                    print(f"audio input restore failed: {e}", flush=True)
+
+    @staticmethod
+    def _tool_path():
+        # Apps launched from Finder inherit a minimal PATH without Homebrew.
+        # Check its standard Apple Silicon and Intel locations explicitly.
+        found = shutil.which("SwitchAudioSource")
+        if found:
+            return found
+        for candidate in (
+            "/opt/homebrew/bin/SwitchAudioSource",
+            "/usr/local/bin/SwitchAudioSource",
+        ):
+            if Path(candidate).is_file():
+                return candidate
+        raise RuntimeError(
+            "SwitchAudioSource is missing; run: brew install switchaudio-osx"
+        )
+
+    @staticmethod
+    def _run(*args):
+        tool = AudioOutputRouter._tool_path()
+        return subprocess.run(
+            [tool, *args], capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    @staticmethod
+    def _spawn(*args):
+        tool = AudioOutputRouter._tool_path()
+        subprocess.Popen(
+            [tool, *args],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def refresh(self):
+        """Cache routing metadata away from the keyboard event callback."""
+        try:
+            outputs = {
+                line.strip()
+                for line in self._run("-a", "-t", "output").splitlines()
+                if line.strip()
+            }
+            if LOOPBACK_OUTPUT not in outputs:
+                raise RuntimeError(
+                    f"{LOOPBACK_OUTPUT!r} is missing; create it in Audio MIDI "
+                    f"Setup with speakers and {LOOPBACK_DEVICE} enabled"
+                )
+            self._current = self._run("-c", "-t", "output") or None
+            self._error = None
+        except Exception as e:
+            self._error = str(e)
+
+    def start(self):
+        # Never run a synchronous subprocess here: this is called by pynput's
+        # macOS event-tap callback, which the OS disables if it takes too long.
+        if self._error:
+            raise RuntimeError(self._error)
+        current = self._current
+        if current == LOOPBACK_OUTPUT:
+            return
+        self._spawn("-t", "output", "-s", LOOPBACK_OUTPUT)
+        self._previous = current or None
+        self._current = LOOPBACK_OUTPUT
+        print(
+            f"system audio output: {current!r} -> {LOOPBACK_OUTPUT!r}",
+            flush=True,
+        )
+
+    def stop(self):
+        previous, self._previous = self._previous, None
+        if previous:
+            try:
+                self._spawn("-t", "output", "-s", previous)
+                self._current = previous
+                print(f"system audio output restored: {previous!r}", flush=True)
+            except Exception as e:
+                print(f"audio output restore failed: {e}", flush=True)
 
 
 class ResilientKeyboardListener(keyboard.Listener):
@@ -366,6 +482,9 @@ class FlowApp(rumps.App):
             "ปล่อยปุ่ม = ถอดเสียง (⏳) แล้วพิมพ์ให้เอง",
         ]
         self.recorder = Recorder()
+        self.output_router = AudioOutputRouter()
+        self.output_router.prepare_loopback()
+        self.output_router.refresh()
         self.recording = False
         self.busy = False
         self._busy_since = 0.0
@@ -377,6 +496,7 @@ class FlowApp(rumps.App):
         self.shift_down = False
         self.option_down = False
         self.hotkey_down = False
+        self._start_timer = None
         self.loopback = False
         self.multilingual = False
         self.paste_target = None
@@ -461,6 +581,7 @@ class FlowApp(rumps.App):
                 if not listener_alive:
                     print("health: hotkey listener not alive; restarting", flush=True)
                     self._start_listener()
+                self.output_router.refresh()
 
             self._update_health_menu()
         except Exception as e:
@@ -973,6 +1094,9 @@ class FlowApp(rumps.App):
 
     def _reset_state(self):
         self._job_id += 1
+        if self._start_timer is not None:
+            self._start_timer.cancel()
+            self._start_timer = None
         self.recording = False
         self.busy = False
         self.hotkey_down = False
@@ -986,6 +1110,7 @@ class FlowApp(rumps.App):
             except Exception:
                 pass
             self.recorder._stream = None
+        self.output_router.stop()
         self.title = ICON_IDLE
 
     def _handle_press(self, key):
@@ -999,6 +1124,7 @@ class FlowApp(rumps.App):
             self.busy = False
             self.title = ICON_IDLE
         if key == HOTKEY:
+            was_hotkey_down = self.hotkey_down
             self.hotkey_down = True
             if self.recording or self.busy:
                 print(
@@ -1006,18 +1132,36 @@ class FlowApp(rumps.App):
                     f"busy={self.busy})",
                     flush=True,
                 )
-        if key == HOTKEY and not self.recording and not self.busy:
+        if (key == HOTKEY and not was_hotkey_down
+                and not self.recording and not self.busy):
             if self.transcribe is None:
                 print("hotkey pressed while model is still loading", flush=True)
                 self._update_health_menu()
                 return  # model still loading
+            # Modifier and Command events do not have a guaranteed order when
+            # the chord is pressed together. Wait very briefly so Shift or
+            # Option can arrive before selecting the recording source.
+            self._start_timer = threading.Timer(
+                CHORD_SETTLE_SECONDS, self._begin_recording
+            )
+            self._start_timer.daemon = True
+            self._start_timer.start()
+
+    def _begin_recording(self):
+        self._start_timer = None
+        if not self.hotkey_down or self.recording or self.busy:
+            return
+        try:
             self.loopback = self.shift_down
             self.multilingual = self.option_down
             self.paste_target = _frontmost_app_info()
             device = LOOPBACK_DEVICE if self.loopback else INPUT_DEVICE
             try:
+                if self.loopback:
+                    self.output_router.start()
                 self.recorder.start(device)
             except Exception as e:
+                self.output_router.stop()
                 msg = f"cannot open input '{device}': {e}"
                 if self.shift_down:
                     msg += " (is BlackHole installed?)"
@@ -1036,6 +1180,9 @@ class FlowApp(rumps.App):
                 self.title = ICON_REC_EN
             else:
                 self.title = ICON_REC
+        except Exception as e:
+            print(f"delayed recording start error: {e}", flush=True)
+            self._reset_state()
 
     def _handle_release(self, key):
         if key in (Key.shift, Key.shift_l, Key.shift_r):
@@ -1053,6 +1200,8 @@ class FlowApp(rumps.App):
                 self.recorder._stream = None
                 self._flash_error(f"recording failed: {e}")
                 return
+            finally:
+                self.output_router.stop()
             duration = len(audio) / SAMPLE_RATE if SAMPLE_RATE else 0
             print(
                 f"recording stopped: {duration:.2f}s, samples={len(audio)}",
@@ -1120,7 +1269,8 @@ class FlowApp(rumps.App):
                 # near-zero samples = macOS/CoreAudio gave us no usable signal:
                 # mic permission reset, muted input, or an unrouted loopback.
                 self._flash_error(
-                    f"no usable audio (peak {peak:.4f}) — check mic input"
+                    f"no usable audio (peak {peak:.4f}) — "
+                    + ("check Multi-Output routing" if loopback else "check mic input")
                 )
                 return
             if peak < SILENCE_PEAK:

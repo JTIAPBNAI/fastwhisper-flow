@@ -131,6 +131,31 @@ if ! system_profiler SPAudioDataType 2>/dev/null | grep -q "BlackHole 2ch"; then
   fi
 fi
 
+# Selects Multi-Output Device only while system audio is being recorded.
+if ! command -v SwitchAudioSource >/dev/null 2>&1; then
+  if command -v brew >/dev/null; then
+    brew install switchaudio-osx || echo "⚠️  Auto-switch output unavailable — brew install switchaudio-osx"
+  else
+    echo "⚠️  Auto-switch output unavailable — install switchaudio-osx"
+  fi
+fi
+
+# BlackHole's master input mute can survive a macOS reboot.  A muted device
+# opens successfully but records only zeroes, so repair it during fresh
+# installs/upgrades and immediately restore the user's normal microphone.
+if command -v SwitchAudioSource >/dev/null 2>&1 \
+    && system_profiler SPAudioDataType 2>/dev/null | grep -q "BlackHole 2ch"; then
+  PREVIOUS_INPUT=$(SwitchAudioSource -c -t input 2>/dev/null || true)
+  if SwitchAudioSource -t input -s "BlackHole 2ch" -m unmute >/dev/null 2>&1; then
+    echo "✓ BlackHole 2ch เปิดรับเสียงแล้ว (unmuted)"
+  else
+    echo "⚠️  ปลด mute BlackHole อัตโนมัติไม่สำเร็จ — ตรวจใน Audio MIDI Setup"
+  fi
+  if [[ -n "$PREVIOUS_INPUT" && "$PREVIOUS_INPUT" != "BlackHole 2ch" ]]; then
+    SwitchAudioSource -t input -s "$PREVIOUS_INPUT" >/dev/null 2>&1 || true
+  fi
+fi
+
 # 3.7 ensure Python.app can request the microphone — without a usage
 # description macOS denies mic access SILENTLY (recordings are all zeros,
 # no permission dialog ever appears)
