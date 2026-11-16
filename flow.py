@@ -278,6 +278,44 @@ class AudioOutputRouter:
             stderr=subprocess.DEVNULL,
         )
 
+    @staticmethod
+    def input_volume():
+        """System input volume 0-100, or None when the device has no control."""
+        try:
+            out = subprocess.run(
+                ["osascript", "-e", "input volume of (get volume settings)"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            return int(out)
+        except Exception:
+            return None
+
+    def repair_mic_input(self):
+        """Fix the common causes of an all-zero microphone stream: input
+        volume at 0 and a muted default input. Returns a short description of
+        what was found/changed for the log."""
+        notes = []
+        vol = self.input_volume()
+        notes.append(f"input volume={vol}")
+        if vol is not None and vol <= 1:
+            try:
+                subprocess.run(
+                    ["osascript", "-e", "set volume input volume 75"],
+                    capture_output=True, timeout=5, check=True,
+                )
+                notes.append("raised input volume to 75")
+            except Exception as e:
+                notes.append(f"could not raise input volume: {e}")
+        try:
+            current = self._run("-c", "-t", "input")
+            notes.append(f"default input={current!r}")
+            if current and current != LOOPBACK_DEVICE:
+                self._run("-t", "input", "-s", current, "-m", "unmute")
+                notes.append("unmuted default input")
+        except Exception as e:
+            notes.append(f"unmute skipped: {e}")
+        return "; ".join(notes)
+
     def refresh(self):
         """Cache routing metadata away from the keyboard event callback."""
         try:
@@ -484,6 +522,11 @@ class FlowApp(rumps.App):
         self.recorder = Recorder()
         self.output_router = AudioOutputRouter()
         self.output_router.prepare_loopback()
+        try:
+            print(f"startup mic check: {self.output_router.repair_mic_input()}",
+                  flush=True)
+        except Exception as e:
+            print(f"startup mic check skipped: {e}", flush=True)
         self.output_router.refresh()
         self.recording = False
         self.busy = False
@@ -1272,6 +1315,17 @@ class FlowApp(rumps.App):
                     f"no usable audio (peak {peak:.4f}) — "
                     + ("check Multi-Output routing" if loopback else "check mic input")
                 )
+                if not loopback:
+                    # self-heal for the next attempt: zero volume / muted
+                    # input, or a stale CoreAudio stream after sleep/wake
+                    def _heal():
+                        try:
+                            print(f"mic repair: {self.output_router.repair_mic_input()}",
+                                  flush=True)
+                            self.recorder.refresh_devices()
+                        except Exception as e:
+                            print(f"mic repair failed: {e}", flush=True)
+                    threading.Thread(target=_heal, daemon=True).start()
                 return
             if peak < SILENCE_PEAK:
                 gain = min(AUTO_GAIN_TARGET_PEAK / peak, MAX_AUTO_GAIN)
